@@ -23,15 +23,20 @@ public class AttachmentController {
         this.requests = requests;
     }
 
-    @GetMapping("/documents/{id}/attachments")
-    public JsonNode list(@PathVariable String id, HttpServletRequest r) {
-        return array(attachments.current(id, requests.auth(r)));
+    @GetMapping("/documents/{type}/{id}/attachments")
+    public JsonNode list(
+            @PathVariable String type,
+            @PathVariable String id,
+            @RequestParam(required = false) String head,
+            HttpServletRequest r) {
+        return array(attachments.at(type, id, head, requests.auth(r)));
     }
 
-    @PostMapping("/documents/{id}/attachments")
-    public ResponseEntity<JsonNode> upload(@PathVariable String id, HttpServletRequest r) {
+    @PostMapping("/documents/{type}/{id}/attachments")
+    public ResponseEntity<JsonNode> upload(
+            @PathVariable String type, @PathVariable String id, HttpServletRequest r) {
         return ResponseEntity.status(201)
-                .body(array(attachments.upload(id, requests.body(r), requests.auth(r))));
+                .body(array(attachments.upload(type, id, requests.body(r), requests.auth(r))));
     }
 
     @GetMapping("/attachments/{id}/metadata")
