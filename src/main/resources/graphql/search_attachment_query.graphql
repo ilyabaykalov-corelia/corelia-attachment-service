@@ -1,1 +1,0 @@
-query searchAttachment($cond: String) { searchAttachment(cond: $cond) { elems { id attachmentId logicalAttachmentId documentId fileName contentType size storageReference version current uploadedAt } count } }

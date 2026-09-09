@@ -9,7 +9,6 @@ import ru.corelia.config.LocalEnvironment;
 @SpringBootApplication(
         scanBasePackages = {
             "ru.corelia.config",
-            "ru.corelia.profile",
             "ru.corelia.support",
             "ru.corelia.auth",
             "ru.corelia.http",

@@ -21,25 +21,20 @@ public class AttachmentService {
 
     private final DataSpaceClient data;
     private final FileStorageClient files;
-    private final ru.corelia.profile.ProductProfile profile;
     private final ru.corelia.transport.ServiceClient services;
 
     public AttachmentService(
             DataSpaceClient data,
             FileStorageClient files,
-            ru.corelia.profile.ProductProfile profile,
             ru.corelia.transport.ServiceClient services) {
         this.data = data;
         this.files = files;
-        this.profile = profile;
         this.services = services;
     }
 
     private List<JsonNode> all(AuthContext auth) {
         return list(
-                query("search_attachment_query", object(), auth)
-                        .path("searchAttachment")
-                        .path("elems"));
+                query("searchAttachment", object(), auth).path("searchAttachment").path("elems"));
     }
 
     public List<JsonNode> current(String documentId, AuthContext auth) {
@@ -101,7 +96,7 @@ public class AttachmentService {
         for (JsonNode item : items) {
             String id = UUID.randomUUID().toString();
             ObjectNode input = uploadVersion(documentId, id, id, 1, item, auth);
-            JsonNode result = query("create_attachment_mutation", object("input", input), auth);
+            JsonNode result = query("createAttachment", object("input", input), auth);
             uploaded.add(publicAttachment(result.path("packet").path("createAttachment")));
         }
         return uploaded;
@@ -123,7 +118,7 @@ public class AttachmentService {
                         auth);
         JsonNode result =
                 query(
-                        "replace_attachment_version_mutation",
+                        "replaceAttachmentVersion",
                         object("currentAttachmentId", text(current, "id"), "input", input),
                         auth);
         return publicAttachment(result.path("packet").path("createAttachment"));
@@ -136,7 +131,7 @@ public class AttachmentService {
             throw new ApiException(502, "DataSpace вернул вложение без documentId");
         for (JsonNode version : versions(current, auth)) {
             query(
-                    "delete_attachment_mutation",
+                    "deleteAttachment",
                     object("id", text(version, "id"), "documentId", document),
                     auth);
         }
@@ -242,60 +237,20 @@ public class AttachmentService {
      */
     private void requireDocument(String id, AuthContext auth) {
         if (id.isEmpty()) throw new ApiException(502, "Вложение не связано с документом");
-        for (String type : profile.codes()) {
-            try {
-                services.call(
-                        "document",
-                        "/internal/v1/documents/" + encode(type) + "/" + encode(id),
-                        "GET",
-                        null,
-                        auth);
-                profile.requireOperation(type, "attachments");
-                return;
-            } catch (ApiException error) {
-                if (error.status() != 404) throw error;
-            }
+        try {
+            services.call(
+                    "document",
+                    "/internal/v1/documents/PDS_CONTRACT/" + encode(id),
+                    "GET",
+                    null,
+                    auth);
+        } catch (ApiException error) {
+            if (error.status() == 404) throw new ApiException(404, "Документ вложения не найден");
+            throw error;
         }
-        throw new ApiException(404, "Документ вложения не найден");
     }
 
     private JsonNode query(String name, JsonNode variables, AuthContext auth) {
-        try {
-            String query =
-                    new org.springframework.core.io.ClassPathResource(
-                                    "graphql/" + name + ".graphql")
-                            .getContentAsString(java.nio.charset.StandardCharsets.UTF_8);
-            JsonNode settings = profile.settings("attachments");
-            // Структура метаданных едина для продукта; имена операций настраиваются при
-            // развёртывании.
-            for (var mapping :
-                    java.util.Map.of(
-                                    "_CreateAttachmentInput",
-                                    "createInput",
-                                    "searchAttachment",
-                                    "searchOperation",
-                                    "createAttachment",
-                                    "createOperation",
-                                    "updateAttachment",
-                                    "updateOperation",
-                                    "deleteAttachment",
-                                    "deleteOperation")
-                            .entrySet())
-                query = query.replace(mapping.getKey(), text(settings, mapping.getValue()));
-            JsonNode response = data.execute(query, variables, auth);
-            // Внутренние имена ответа не зависят от имён операций конкретной модели.
-            var normalized = copy(response);
-            if (response.has(text(settings, "searchOperation")))
-                normalized.set(
-                        "searchAttachment", response.path(text(settings, "searchOperation")));
-            if (response.path("packet").has(text(settings, "createOperation")))
-                ((ObjectNode) normalized.path("packet"))
-                        .set(
-                                "createAttachment",
-                                response.path("packet").path(text(settings, "createOperation")));
-            return normalized;
-        } catch (java.io.IOException error) {
-            throw new IllegalStateException("Не найден запрос вложений", error);
-        }
+        return data.query(name, variables, auth);
     }
 }
