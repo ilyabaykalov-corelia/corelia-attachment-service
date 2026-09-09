@@ -89,14 +89,14 @@ public class AttachmentService {
     }
 
     public List<JsonNode> upload(String documentId, JsonNode payload, AuthContext auth) {
-        requireDocument(documentId, auth);
+        JsonNode documentRecord = requireDocumentRecord(documentId, auth);
         List<JsonNode> items = list(payload.path("attachments"));
         if (items.isEmpty()) throw new ApiException(400, "Не переданы файлы для загрузки");
         List<JsonNode> uploaded = new ArrayList<>();
         for (JsonNode item : items) {
             String id = UUID.randomUUID().toString();
             ObjectNode input = uploadVersion(documentId, id, id, 1, item, auth);
-            JsonNode result = query("createAttachment", object("input", input), auth);
+            JsonNode result = query("createAttachment", compositionVariables(documentRecord, input, false), auth);
             uploaded.add(publicAttachment(result.path("packet").path("createAttachment")));
         }
         return uploaded;
@@ -116,10 +116,14 @@ public class AttachmentService {
                         Math.max(1, number(current, "version", 1)) + 1,
                         items.getFirst(),
                         auth);
+        JsonNode documentRecord = requireDocumentRecord(document, auth);
+        String changeId = UUID.randomUUID().toString();
         JsonNode result =
                 query(
                         "replaceAttachmentVersion",
-                        object("currentAttachmentId", text(current, "id"), "input", input),
+                        object("currentAttachmentId", text(current, "id"), "input", input,
+                                "changeId", changeId, "contractId", text(documentRecord, "dataSpaceId"),
+                                "change", change(documentRecord, input, false, changeId)),
                         auth);
         return publicAttachment(result.path("packet").path("createAttachment"));
     }
@@ -129,12 +133,11 @@ public class AttachmentService {
         String document = text(current, "documentId");
         if (document.isEmpty())
             throw new ApiException(502, "DataSpace вернул вложение без documentId");
-        for (JsonNode version : versions(current, auth)) {
-            query(
-                    "deleteAttachment",
-                    object("id", text(version, "id"), "documentId", document),
-                    auth);
-        }
+        JsonNode documentRecord = requireDocumentRecord(document, auth);
+        String changeId = UUID.randomUUID().toString();
+        query("deleteAttachment", object("id", text(current, "id"), "documentId", document,
+                "changeId", changeId, "contractId", text(documentRecord, "dataSpaceId"),
+                "change", change(documentRecord, current, true, changeId)), auth);
         return object("deleted", true);
     }
 
@@ -185,11 +188,11 @@ public class AttachmentService {
                 "contentType",
                 contentType,
                 "size",
-                bytes.length,
+                (long) bytes.length,
                 "storageReference",
                 "platform-v-dam:" + path,
                 "version",
-                version,
+                Math.toIntExact(version),
                 "current",
                 true,
                 "uploadedAt",
@@ -248,6 +251,30 @@ public class AttachmentService {
             if (error.status() == 404) throw new ApiException(404, "Документ вложения не найден");
             throw error;
         }
+    }
+
+    private JsonNode requireDocumentRecord(String id, AuthContext auth) {
+        if (id.isEmpty()) throw new ApiException(502, "Вложение не связано с документом");
+        return services.call("document", "/internal/v1/documents/PDS_CONTRACT/" + encode(id), "GET", null, auth);
+    }
+
+    private static JsonNode compositionVariables(JsonNode document, JsonNode attachment, boolean removed) {
+        String changeId = UUID.randomUUID().toString();
+        return object("input", attachment, "changeId", changeId, "contractId", text(document, "dataSpaceId"),
+                "change", change(document, attachment, removed, changeId));
+    }
+
+    private static JsonNode change(JsonNode document, JsonNode attachment, boolean removed, String requestedId) {
+        String head = text(document, "attachmentsHead");
+        String changeId = requestedId == null ? UUID.randomUUID().toString() : requestedId;
+        return object("changeKey", changeId,
+                "documentId", fallback(text(document, "documentId"), text(document, "id")),
+                "documentType", fallback(text(document, "typeCode"), "PDS_CONTRACT"),
+                "previousId", head,
+                "previousKey", head.isEmpty()
+                        ? fallback(text(document, "documentId"), text(document, "id"))
+                        : head,
+                "attachmentId", first(attachment, "id", "attachmentId"), "removed", removed);
     }
 
     private JsonNode query(String name, JsonNode variables, AuthContext auth) {
