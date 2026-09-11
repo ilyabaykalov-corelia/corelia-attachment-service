@@ -38,7 +38,8 @@ public class AttachmentService {
     }
 
     public List<JsonNode> current(String documentType, String documentId, AuthContext auth) {
-        requireDocument(documentType, documentId, auth);
+        PdsContract.requireType(documentType);
+        requireDocument(documentId, auth);
         return all(auth).stream()
                 .filter(
                         item ->
@@ -52,50 +53,6 @@ public class AttachmentService {
                 .toList();
     }
 
-    public List<JsonNode> at(String documentType, String documentId, String head, AuthContext auth) {
-        if (head == null) return current(documentType, documentId, auth);
-        requireDocument(documentType, documentId, auth);
-        if (head.isBlank()) return List.of();
-        List<JsonNode> rows = all(auth);
-        Map<String, JsonNode> byId = new HashMap<>();
-        rows.forEach(
-                row -> {
-                    byId.put(text(row, "id"), row);
-                    byId.put(text(row, "attachmentId"), row);
-                });
-        Map<String, JsonNode> changes = new HashMap<>();
-        composition(auth).stream()
-                .filter(change -> documentId.equals(text(change, "documentId")))
-                .forEach(change -> changes.put(text(change, "changeKey"), change));
-        Map<String, JsonNode> selected = new LinkedHashMap<>();
-        Set<String> removed = new HashSet<>();
-        String cursor = head;
-        while (!cursor.isBlank()) {
-            JsonNode change = changes.get(cursor);
-            if (change == null) break;
-            for (JsonNode baseline : list(change.path("baselineAttachments").path("elems"))) {
-                JsonNode attachment = byId.get(text(baseline, "attachmentId"));
-                if (attachment != null) {
-                    String logical = logicalId(attachment);
-                    if (!removed.contains(logical)) selected.putIfAbsent(logical, attachment);
-                }
-            }
-            String attachmentId = text(change, "attachmentId");
-            JsonNode attachment = byId.get(attachmentId);
-            if (attachment != null) {
-                String logical = logicalId(attachment);
-                if (change.path("removed").asBoolean(false)) {
-                    removed.add(logical);
-                    selected.remove(logical);
-                } else if (!removed.contains(logical)) {
-                    selected.putIfAbsent(logical, attachment);
-                }
-            }
-            cursor = text(change, "previousId");
-        }
-        return selected.values().stream().map(AttachmentService::publicAttachment).toList();
-    }
-
     public JsonNode find(String id, AuthContext auth) {
         JsonNode found =
                 all(auth).stream()
@@ -105,10 +62,7 @@ public class AttachmentService {
                                                 || id.equals(text(item, "id")))
                         .findFirst()
                         .orElseThrow(() -> new ApiException(404, "Вложение не найдено"));
-        String documentId = text(found, "documentId");
-        String documentType = resolveType(documentId, auth);
-        requireDocument(documentType, documentId, auth);
-        if (!found.has("documentType")) ((ObjectNode) found).put("documentType", documentType);
+        requireDocument(text(found, "documentId"), auth);
         return found;
     }
 
@@ -136,27 +90,16 @@ public class AttachmentService {
     }
 
     public List<JsonNode> upload(String documentType, String documentId, JsonNode payload, AuthContext auth) {
-        JsonNode documentRecord = requireDocumentRecord(documentType, documentId, auth);
+        PdsContract.requireType(documentType);
+        requireDocument(documentId, auth);
         List<JsonNode> items = list(payload.path("attachments"));
         if (items.isEmpty()) throw new ApiException(400, "Не переданы файлы для загрузки");
         List<JsonNode> uploaded = new ArrayList<>();
-        JsonNode currentDocument = documentRecord;
         for (JsonNode item : items) {
             String id = UUID.randomUUID().toString();
             ObjectNode input = uploadVersion(documentId, id, id, 1, item, auth);
-            String changeId = UUID.randomUUID().toString();
-            JsonNode result =
-                    query(
-                            "createAttachment",
-                            object(
-                                    "input", input,
-                                    "changeId", changeId,
-                                    "contractId", text(currentDocument, "dataSpaceId"),
-                                    "change", change(currentDocument, input, false, changeId)),
-                            auth);
+            JsonNode result = query("createAttachment", object("input", input), auth);
             uploaded.add(publicAttachment(result.path("packet").path("createAttachment")));
-            currentDocument = copy(currentDocument);
-            ((ObjectNode) currentDocument).put("attachmentsHead", changeId);
         }
         return uploaded;
     }
@@ -175,15 +118,10 @@ public class AttachmentService {
                         Math.max(1, number(current, "version", 1)) + 1,
                         items.getFirst(),
                         auth);
-        String documentType = resolveType(document, auth);
-        JsonNode documentRecord = requireDocumentRecord(documentType, document, auth);
-        String changeId = UUID.randomUUID().toString();
         JsonNode result =
                 query(
                         "replaceAttachmentVersion",
-                        object("currentAttachmentId", text(current, "id"), "input", input,
-                                "changeId", changeId, "contractId", text(documentRecord, "dataSpaceId"),
-                                "change", change(documentRecord, input, false, changeId)),
+                        object("currentAttachmentId", text(current, "id"), "input", input),
                         auth);
         return publicAttachment(result.path("packet").path("createAttachment"));
     }
@@ -193,12 +131,12 @@ public class AttachmentService {
         String document = text(current, "documentId");
         if (document.isEmpty())
             throw new ApiException(502, "DataSpace вернул вложение без documentId");
-        String documentType = resolveType(document, auth);
-        JsonNode documentRecord = requireDocumentRecord(documentType, document, auth);
-        String changeId = UUID.randomUUID().toString();
-        query("deleteAttachment", object("id", text(current, "id"), "documentId", document,
-                "changeId", changeId, "contractId", text(documentRecord, "dataSpaceId"),
-                "change", change(documentRecord, current, true, changeId)), auth);
+        for (JsonNode version : versions(current, auth)) {
+            query(
+                    "deleteAttachment",
+                    object("id", text(version, "id"), "documentId", document),
+                    auth);
+        }
         return object("deleted", true);
     }
 
@@ -249,11 +187,11 @@ public class AttachmentService {
                 "contentType",
                 contentType,
                 "size",
-                (long) bytes.length,
+                bytes.length,
                 "storageReference",
                 "platform-v-dam:" + path,
                 "version",
-                Math.toIntExact(version),
+                version,
                 "current",
                 true,
                 "uploadedAt",
@@ -261,7 +199,7 @@ public class AttachmentService {
     }
 
     private static byte[] decodeBase64(String value) {
-        // Принимаем URL-safe алфавит, пробелы и отсутствующий padding.
+        // Buffer.from в Node.js допускает URL-safe алфавит, пробелы и отсутствующий padding.
         String cleaned =
                 value.replace('-', '+').replace('_', '/').replaceAll("[^A-Za-z0-9+/=]", "");
         int padding = cleaned.indexOf('=');
@@ -299,12 +237,12 @@ public class AttachmentService {
     /**
      * Проверяет доступ к карточке до обращения к бинарному содержимому или изменения метаданных.
      */
-    private void requireDocument(String documentType, String id, AuthContext auth) {
+    private void requireDocument(String id, AuthContext auth) {
         if (id.isEmpty()) throw new ApiException(502, "Вложение не связано с документом");
         try {
             services.call(
                     "document",
-                    "/internal/v1/documents/" + encode(documentType) + "/" + encode(id),
+                    "/internal/v1/documents/PDS_CONTRACT/" + encode(id),
                     "GET",
                     null,
                     auth);
@@ -312,37 +250,6 @@ public class AttachmentService {
             if (error.status() == 404) throw new ApiException(404, "Документ вложения не найден");
             throw error;
         }
-    }
-
-    private JsonNode requireDocumentRecord(String documentType, String id, AuthContext auth) {
-        if (id.isEmpty()) throw new ApiException(502, "Вложение не связано с документом");
-        return services.call("document", "/internal/v1/documents/" + encode(documentType) + "/" + encode(id), "GET", null, auth);
-    }
-
-    private List<JsonNode> composition(AuthContext auth) {
-        return list(query("attachmentComposition", object(), auth).path("searchAttachmentChange").path("elems"));
-    }
-
-    private String resolveType(String documentId, AuthContext auth) {
-        return composition(auth).stream()
-                .filter(change -> documentId.equals(text(change, "documentId")))
-                .map(change -> text(change, "documentType"))
-                .filter(value -> !value.isEmpty())
-                .findFirst()
-                .orElse(PdsContract.TYPE);
-    }
-
-    private static JsonNode change(JsonNode document, JsonNode attachment, boolean removed, String requestedId) {
-        String head = text(document, "attachmentsHead");
-        String changeId = requestedId == null ? UUID.randomUUID().toString() : requestedId;
-        return object("changeKey", changeId,
-                "documentId", fallback(text(document, "documentId"), text(document, "id")),
-                "documentType", fallback(text(document, "typeCode"), "PDS_CONTRACT"),
-                "previousId", head,
-                "previousKey", head.isEmpty()
-                        ? fallback(text(document, "documentId"), text(document, "id"))
-                        : head,
-                "attachmentId", first(attachment, "id", "attachmentId"), "removed", removed);
     }
 
     private JsonNode query(String name, JsonNode variables, AuthContext auth) {

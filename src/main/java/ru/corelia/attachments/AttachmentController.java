@@ -27,9 +27,8 @@ public class AttachmentController {
     public JsonNode list(
             @PathVariable String type,
             @PathVariable String id,
-            @RequestParam(required = false) String head,
             HttpServletRequest r) {
-        return array(attachments.at(type, id, head, requests.auth(r)));
+        return array(attachments.current(type, id, requests.auth(r)));
     }
 
     @PostMapping("/documents/{type}/{id}/attachments")
