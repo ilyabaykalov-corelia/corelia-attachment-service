@@ -33,24 +33,18 @@ public class AttachmentService {
     }
 
     private List<JsonNode> all(AuthContext auth) {
-        return list(
-                query("searchAttachment", object(), auth).path("searchAttachment").path("elems"));
+        List<JsonNode> result = new ArrayList<>();
+        for (int offset = 0; ; ) {
+            JsonNode page = query("searchAttachment", object("offset", offset, "limit", 500), auth).path("searchAttachment");
+            List<JsonNode> batch = list(page.path("elems")); result.addAll(batch); offset += batch.size();
+            if (offset >= number(page, "count", offset)) return result;
+            if (batch.isEmpty()) throw new ApiException(502, "Неполная выборка вложений");
+        }
     }
 
     public List<JsonNode> current(String documentType, String documentId, AuthContext auth) {
         PdsContract.requireType(documentType);
-        requireDocument(documentId, auth);
-        return all(auth).stream()
-                .filter(
-                        item ->
-                                documentId.equals(text(item, "documentId"))
-                                        && !item.path("current")
-                                                .equals(MAPPER.getNodeFactory().booleanNode(false)))
-                .sorted(
-                        Comparator.comparing((JsonNode node) -> text(node, "uploadedAt"))
-                                .reversed())
-                .map(AttachmentService::publicAttachment)
-                .toList();
+        return list(services.call("document", "/internal/v1/documents/" + encode(documentType) + "/" + encode(documentId), "GET", null, auth).path("attachments"));
     }
 
     public JsonNode find(String id, AuthContext auth) {
@@ -77,11 +71,9 @@ public class AttachmentService {
     }
 
     public List<JsonNode> previous(String id, AuthContext auth) {
-        return versions(find(id, auth), auth).stream()
-                .filter(
-                        item ->
-                                item.path("current")
-                                        .equals(MAPPER.getNodeFactory().booleanNode(false)))
+        JsonNode selected = find(id, auth);
+        return versions(selected, auth).stream()
+                .filter(item -> number(item, "version", 1) < number(selected, "version", 1))
                 .sorted(
                         Comparator.comparingLong((JsonNode item) -> number(item, "version", 1))
                                 .reversed())
@@ -94,50 +86,40 @@ public class AttachmentService {
         requireDocument(documentId, auth);
         List<JsonNode> items = list(payload.path("attachments"));
         if (items.isEmpty()) throw new ApiException(400, "Не переданы файлы для загрузки");
+        String requestId = requireRequestId(payload);
         List<JsonNode> uploaded = new ArrayList<>();
-        for (JsonNode item : items) {
-            String id = UUID.randomUUID().toString();
-            ObjectNode input = uploadVersion(documentId, id, id, 1, item, auth);
-            JsonNode result = query("createAttachment", object("input", input), auth);
-            uploaded.add(publicAttachment(result.path("packet").path("createAttachment")));
+        for (int index = 0; index < items.size(); index++) {
+            String childRequest = UUID.nameUUIDFromBytes((requestId + ":" + index).getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+            String id = UUID.nameUUIDFromBytes((documentId + ":" + childRequest).getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+            ObjectNode input = uploadVersion(documentId, id, id, 1, items.get(index), auth);
+            uploaded.add(command(documentId, object("action", "upload", "requestId", childRequest, "file", input), auth));
         }
         return uploaded;
     }
 
     public JsonNode replace(JsonNode current, JsonNode payload, AuthContext auth) {
         String document = text(current, "documentId");
-        if (document.isEmpty())
-            throw new ApiException(502, "DataSpace вернул вложение без documentId");
+        String requestId = requireRequestId(payload);
         List<JsonNode> items = list(payload.path("attachments"));
-        if (items.isEmpty()) throw new ApiException(400, "Не передан файл для загрузки");
-        ObjectNode input =
-                uploadVersion(
-                        document,
-                        UUID.randomUUID().toString(),
-                        logicalId(current),
-                        Math.max(1, number(current, "version", 1)) + 1,
-                        items.getFirst(),
-                        auth);
-        JsonNode result =
-                query(
-                        "replaceAttachmentVersion",
-                        object("currentAttachmentId", text(current, "id"), "input", input),
-                        auth);
-        return publicAttachment(result.path("packet").path("createAttachment"));
+        if (items.size() != 1) throw new ApiException(400, "Для замены требуется один файл");
+        String id = UUID.nameUUIDFromBytes((document + ":" + requestId).getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+        ObjectNode input = uploadVersion(document, id, logicalId(current), number(current, "version", 1) + 1, items.getFirst(), auth);
+        return command(document, object("action", "replace", "requestId", requestId,
+                "attachmentId", first(current, "attachmentId", "id"), "file", input), auth);
     }
 
-    public JsonNode delete(String id, AuthContext auth) {
+    public JsonNode delete(String id, String requestId, AuthContext auth) {
         JsonNode current = find(id, auth);
-        String document = text(current, "documentId");
-        if (document.isEmpty())
-            throw new ApiException(502, "DataSpace вернул вложение без documentId");
-        for (JsonNode version : versions(current, auth)) {
-            query(
-                    "deleteAttachment",
-                    object("id", text(version, "id"), "documentId", document),
-                    auth);
-        }
-        return object("deleted", true);
+        return command(text(current, "documentId"), object("action", "delete", "attachmentId", first(current, "attachmentId", "id"),
+                "requestId", requireRequestId(object("requestId", requestId))), auth);
+    }
+    private JsonNode command(String document, JsonNode body, AuthContext auth) {
+        return services.call("document", "/internal/v1/documents/PDS_CONTRACT/" + encode(document) + "/attachment-commands", "POST", body, auth);
+    }
+    private static String requireRequestId(JsonNode payload) {
+        String value = text(payload, "requestId");
+        try { UUID.fromString(value); } catch (IllegalArgumentException e) { throw new ApiException(400, "Требуется requestId в формате UUID"); }
+        return value;
     }
 
     public Download download(String id, AuthContext auth) {
@@ -173,7 +155,10 @@ public class AttachmentService {
         if (base64.isEmpty()) throw new ApiException(400, "Файл должен содержать имя и содержимое");
         byte[] bytes = decodeBase64(base64);
         String contentType = fallback(text(item, "contentType"), "application/octet-stream");
-        String path = "documents/" + documentId + "/" + logicalId + "/v" + version + "/" + name;
+        String checksum;
+        try { checksum = HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes)); }
+        catch (java.security.NoSuchAlgorithmException e) { throw new IllegalStateException(e); }
+        String path = "documents/" + documentId + "/uploads/" + id + "/" + checksum + "/" + name;
         files.upload(path, name, contentType, bytes, auth);
         return object(
                 "attachmentId",
