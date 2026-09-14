@@ -51,7 +51,7 @@ public class AttachmentController {
 
     @DeleteMapping("/attachments/{id}")
     public JsonNode delete(@PathVariable String id, HttpServletRequest r) {
-        return attachments.delete(id, requests.auth(r));
+        return attachments.delete(id, r.getParameter("requestId"), requests.auth(r));
     }
 
     @GetMapping("/attachments/{id}/versions")
