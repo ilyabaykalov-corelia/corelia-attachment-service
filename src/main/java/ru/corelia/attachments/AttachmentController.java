@@ -23,6 +23,11 @@ public class AttachmentController {
         this.requests = requests;
     }
 
+    @PostMapping("/initial-attachments/{id}")
+    public JsonNode stage(@PathVariable String id, HttpServletRequest r) {
+        return attachments.stageInitial(id, requests.body(r), requests.auth(r));
+    }
+
     @GetMapping("/documents/{type}/{id}/attachments")
     public JsonNode list(
             @PathVariable String type,
