@@ -43,7 +43,6 @@ public class AttachmentService {
     }
 
     public List<JsonNode> current(String documentType, String documentId, AuthContext auth) {
-        PdsContract.requireType(documentType);
         return list(services.call("document", "/internal/v1/documents/" + encode(documentType) + "/" + encode(documentId), "GET", null, auth).path("attachments"));
     }
 
@@ -82,8 +81,9 @@ public class AttachmentService {
     }
 
     public List<JsonNode> upload(String documentType, String documentId, JsonNode payload, AuthContext auth) {
-        PdsContract.requireType(documentType);
-        requireDocument(documentId, auth);
+        JsonNode owner = requireDocument(documentId, auth);
+        if (!documentType.equals(text(owner, "typeCode")))
+            throw new ApiException(400, "Вид документа не соответствует вложению");
         List<JsonNode> items = list(payload.path("attachments"));
         if (items.isEmpty()) throw new ApiException(400, "Не переданы файлы для загрузки");
         String requestId = requireRequestId(payload);
@@ -114,7 +114,8 @@ public class AttachmentService {
                 "requestId", requireRequestId(object("requestId", requestId))), auth);
     }
     private JsonNode command(String document, JsonNode body, AuthContext auth) {
-        return services.call("document", "/internal/v1/documents/PDS_CONTRACT/" + encode(document) + "/attachment-commands", "POST", body, auth);
+        String type = text(requireDocument(document, auth), "typeCode");
+        return services.call("document", "/internal/v1/documents/" + encode(type) + "/" + encode(document) + "/attachment-commands", "POST", body, auth);
     }
     private static String requireRequestId(JsonNode payload) {
         String value = text(payload, "requestId");
@@ -222,12 +223,12 @@ public class AttachmentService {
     /**
      * Проверяет доступ к карточке до обращения к бинарному содержимому или изменения метаданных.
      */
-    private void requireDocument(String id, AuthContext auth) {
+    private JsonNode requireDocument(String id, AuthContext auth) {
         if (id.isEmpty()) throw new ApiException(502, "Вложение не связано с документом");
         try {
-            services.call(
+            return services.call(
                     "document",
-                    "/internal/v1/documents/PDS_CONTRACT/" + encode(id),
+                    "/internal/v1/documents/by-id/" + encode(id),
                     "GET",
                     null,
                     auth);
