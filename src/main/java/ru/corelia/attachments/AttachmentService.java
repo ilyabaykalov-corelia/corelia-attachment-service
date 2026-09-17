@@ -147,13 +147,12 @@ public class AttachmentService {
     /** Подготовка обязательного первого файла до появления документа; только для document-service. */
     public JsonNode stageInitial(String documentId, JsonNode body, AuthContext auth) {
         try { UUID.fromString(documentId); } catch (IllegalArgumentException e) { throw new ApiException(400, "Некорректный ID документа"); }
-        if (!auth.roles().contains("document_operator") && !auth.roles().contains("app_owner"))
-            throw new ApiException(403, "Создание доступно оператору");
+        // mTLS restricts this route to document-service, which owns creation authorization.
         JsonNode item = body.path("attachment");
         String content = text(item, "contentBase64");
         byte[] bytes;
         try { bytes = Base64.getDecoder().decode(content); } catch (IllegalArgumentException e) { throw new ApiException(400, "Некорректное содержимое файла"); }
-        if (bytes.length == 0) throw new ApiException(400, "Для создания КИД ОПС требуется непустое вложение");
+        if (bytes.length == 0) throw new ApiException(400, "Для создания документа требуется непустое вложение");
         String id = UUID.nameUUIDFromBytes((documentId + ":initial").getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
         return uploadVersion(documentId, id, id, 1, item, auth);
     }
