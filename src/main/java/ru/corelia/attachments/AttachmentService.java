@@ -5,6 +5,7 @@ import static ru.corelia.support.Json.*;
 import org.springframework.stereotype.Service;
 
 import ru.corelia.auth.AuthContext;
+import ru.corelia.config.CoreliaConfig;
 import ru.corelia.http.ApiException;
 import ru.corelia.integration.*;
 
@@ -22,14 +23,20 @@ public class AttachmentService {
     private final DataSpaceClient data;
     private final FileStorageClient files;
     private final ru.corelia.transport.ServiceClient services;
+    private final long maxAttachmentBytes;
 
     public AttachmentService(
             DataSpaceClient data,
             FileStorageClient files,
-            ru.corelia.transport.ServiceClient services) {
+            ru.corelia.transport.ServiceClient services,
+            CoreliaConfig config) {
         this.data = data;
         this.files = files;
         this.services = services;
+        long megabytes = config.number("MAX_ATTACHMENT_SIZE_MB", 10);
+        if (megabytes < 1 || megabytes > 1024)
+            throw new IllegalArgumentException("MAX_ATTACHMENT_SIZE_MB должен быть от 1 до 1024");
+        this.maxAttachmentBytes = megabytes * 1024 * 1024;
     }
 
     private List<JsonNode> all(AuthContext auth) {
@@ -167,7 +174,11 @@ public class AttachmentService {
         String name = FileStorageClient.safeFileName(text(item, "fileName")),
                 base64 = text(item, "contentBase64");
         if (base64.isEmpty()) throw new ApiException(400, "Файл должен содержать имя и содержимое");
+        if ((long) base64.length() * 3 / 4 > maxAttachmentBytes)
+            throw new ApiException(413, "Превышен допустимый размер вложения");
         byte[] bytes = decodeBase64(base64);
+        if (bytes.length > maxAttachmentBytes)
+            throw new ApiException(413, "Превышен допустимый размер вложения");
         String contentType = fallback(text(item, "contentType"), "application/octet-stream");
         String checksum;
         try { checksum = HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes)); }
