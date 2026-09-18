@@ -198,13 +198,15 @@ public class AttachmentService {
     }
 
     private static byte[] decodeBase64(String value) {
-        // Buffer.from в Node.js допускает URL-safe алфавит, пробелы и отсутствующий padding.
-        String cleaned =
-                value.replace('-', '+').replace('_', '/').replaceAll("[^A-Za-z0-9+/=]", "");
-        int padding = cleaned.indexOf('=');
-        if (padding >= 0) cleaned = cleaned.substring(0, padding);
-        if (cleaned.length() % 4 == 1) cleaned = cleaned.substring(0, cleaned.length() - 1);
-        return Base64.getDecoder().decode(cleaned);
+        boolean urlSafe = value.indexOf('-') >= 0 || value.indexOf('_') >= 0;
+        String pattern = urlSafe ? "[A-Za-z0-9_-]*={0,2}" : "[A-Za-z0-9+/]*={0,2}";
+        if (!value.matches(pattern) || value.indexOf('=') >= 0 && value.indexOf('=') < value.length() - 2)
+            throw new ApiException(400, "Некорректное содержимое файла");
+        try {
+            return (urlSafe ? Base64.getUrlDecoder() : Base64.getDecoder()).decode(value);
+        } catch (IllegalArgumentException error) {
+            throw new ApiException(400, "Некорректное содержимое файла");
+        }
     }
 
     private static String logicalId(JsonNode raw) {
