@@ -20,7 +20,7 @@ import java.util.*;
 /** Адаптирует команды вложений к DAM и существующим GraphQL-операциям метаданных. */
 @Service
 public class AttachmentService {
-    public record Download(byte[] body, String contentType, String fileName) {}
+    public record Download(InputStream body, String contentType, String fileName) {}
 
     private final DataSpaceClient data;
     private final FileStorageClient files;

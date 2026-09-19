@@ -5,6 +5,7 @@ import static ru.corelia.support.Json.*;
 import jakarta.servlet.http.HttpServletRequest;
 
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -93,13 +94,15 @@ public class AttachmentController {
     }
 
     @GetMapping("/attachments/{id}")
-    public ResponseEntity<byte[]> download(@PathVariable String id, HttpServletRequest r) {
+    public ResponseEntity<StreamingResponseBody> download(@PathVariable String id, HttpServletRequest r) {
         var file = attachments.download(id, requests.auth(r));
         return ResponseEntity.ok()
                 .header("Content-Type", file.contentType())
                 .header(
                         "Content-Disposition",
                         "attachment; filename*=UTF-8''" + encode(file.fileName()))
-                .body(file.body());
+                .body(output -> {
+                    try (var input = file.body()) { input.transferTo(output); }
+                });
     }
 }
