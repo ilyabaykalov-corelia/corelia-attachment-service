@@ -3,6 +3,7 @@ package ru.corelia.attachments;
 import static ru.corelia.support.Json.*;
 
 import org.springframework.stereotype.Service;
+import org.springframework.web.multipart.MultipartFile;
 
 import ru.corelia.auth.AuthContext;
 import ru.corelia.config.CoreliaConfig;
@@ -13,6 +14,7 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ObjectNode;
 
 import java.time.Instant;
+import java.io.*;
 import java.util.*;
 
 /** Адаптирует команды вложений к DAM и существующим GraphQL-операциям метаданных. */
@@ -104,6 +106,22 @@ public class AttachmentService {
         return uploaded;
     }
 
+    public JsonNode uploadStream(
+            String documentType,
+            String documentId,
+            String requestId,
+            MultipartFile file,
+            AuthContext auth) {
+        JsonNode owner = requireDocument(documentId, auth);
+        if (!documentType.equals(text(owner, "typeCode")))
+            throw new ApiException(400, "Вид документа не соответствует вложению");
+        requireRequestId(object("requestId", requestId));
+        if (file.isEmpty()) throw new ApiException(400, "Не передан файл для загрузки");
+        String id = UUID.nameUUIDFromBytes((documentId + ":" + requestId).getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+        ObjectNode input = uploadStreamVersion(documentId, id, id, 1, file, auth);
+        return command(documentId, object("action", "upload", "requestId", requestId, "file", input), auth);
+    }
+
     public JsonNode replace(JsonNode current, JsonNode payload, AuthContext auth) {
         String document = text(current, "documentId");
         String requestId = requireRequestId(payload);
@@ -111,6 +129,24 @@ public class AttachmentService {
         if (items.size() != 1) throw new ApiException(400, "Для замены требуется один файл");
         String id = UUID.nameUUIDFromBytes((document + ":" + requestId).getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
         ObjectNode input = uploadVersion(document, id, logicalId(current), number(current, "version", 1) + 1, items.getFirst(), auth);
+        return command(document, object("action", "replace", "requestId", requestId,
+                "attachmentId", first(current, "attachmentId", "id"), "file", input), auth);
+    }
+
+    public JsonNode replaceStream(
+            JsonNode current, String requestId, MultipartFile file, AuthContext auth) {
+        String document = text(current, "documentId");
+        requireRequestId(object("requestId", requestId));
+        if (file.isEmpty()) throw new ApiException(400, "Не передан файл для замены");
+        String id = UUID.nameUUIDFromBytes((document + ":" + requestId).getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+        ObjectNode input =
+                uploadStreamVersion(
+                        document,
+                        id,
+                        logicalId(current),
+                        number(current, "version", 1) + 1,
+                        file,
+                        auth);
         return command(document, object("action", "replace", "requestId", requestId,
                 "attachmentId", first(current, "attachmentId", "id"), "file", input), auth);
     }
@@ -206,6 +242,57 @@ public class AttachmentService {
                 true,
                 "uploadedAt",
                 Instant.now().toString());
+    }
+
+    private ObjectNode uploadStreamVersion(
+            String documentId,
+            String id,
+            String logicalId,
+            long version,
+            MultipartFile file,
+            AuthContext auth) {
+        String name = FileStorageClient.safeFileName(fallback(file.getOriginalFilename(), "attachment.bin"));
+        long size = file.getSize();
+        if (size <= 0) throw new ApiException(400, "Файл не должен быть пустым");
+        if (size > maxAttachmentBytes) throw new ApiException(413, "Превышен допустимый размер вложения");
+        String checksum = checksum(file, size);
+        String contentType = fallback(file.getContentType(), "application/octet-stream");
+        String path = "documents/" + documentId + "/uploads/" + id + "/" + checksum + "/" + name;
+        try (InputStream content = file.getInputStream()) {
+            files.upload(path, name, contentType, content, size, auth);
+        } catch (IOException error) {
+            throw new ApiException(400, "Не удалось прочитать загружаемый файл");
+        }
+        return object(
+                "attachmentId", id,
+                "logicalAttachmentId", logicalId,
+                "documentId", documentId,
+                "fileName", name,
+                "contentType", contentType,
+                "size", size,
+                "storageReference", "platform-v-dam:" + path,
+                "version", version,
+                "current", true,
+                "uploadedAt", Instant.now().toString());
+    }
+
+    private String checksum(MultipartFile file, long expectedSize) {
+        try (InputStream content = file.getInputStream()) {
+            var digest = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] buffer = new byte[8192];
+            long actualSize = 0;
+            for (int count; (count = content.read(buffer)) != -1; ) {
+                actualSize += count;
+                if (actualSize > maxAttachmentBytes) throw new ApiException(413, "Превышен допустимый размер вложения");
+                digest.update(buffer, 0, count);
+            }
+            if (actualSize != expectedSize) throw new ApiException(400, "Размер загружаемого файла изменился");
+            return HexFormat.of().formatHex(digest.digest());
+        } catch (IOException error) {
+            throw new ApiException(400, "Не удалось прочитать загружаемый файл");
+        } catch (java.security.NoSuchAlgorithmException error) {
+            throw new IllegalStateException(error);
+        }
     }
 
     private static byte[] decodeBase64(String value) {

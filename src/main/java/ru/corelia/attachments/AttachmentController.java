@@ -6,6 +6,7 @@ import jakarta.servlet.http.HttpServletRequest;
 
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 import ru.corelia.http.ApiRequest;
 
@@ -43,6 +44,17 @@ public class AttachmentController {
                 .body(array(attachments.upload(type, id, requests.body(r), requests.auth(r))));
     }
 
+    @PostMapping(value = "/documents/{type}/{id}/attachments/stream", consumes = "multipart/form-data")
+    public ResponseEntity<JsonNode> uploadStream(
+            @PathVariable String type,
+            @PathVariable String id,
+            @RequestParam String requestId,
+            @RequestParam MultipartFile file,
+            HttpServletRequest r) {
+        return ResponseEntity.status(201)
+                .body(attachments.uploadStream(type, id, requestId, file, requests.auth(r)));
+    }
+
     @GetMapping("/attachments/{id}/metadata")
     public JsonNode metadata(@PathVariable String id, HttpServletRequest r) {
         return attachments.find(id, requests.auth(r));
@@ -52,6 +64,16 @@ public class AttachmentController {
     public JsonNode replace(@PathVariable String id, HttpServletRequest r) {
         var auth = requests.auth(r);
         return attachments.replace(attachments.find(id, auth), requests.body(r), auth);
+    }
+
+    @PutMapping(value = "/attachments/{id}/stream", consumes = "multipart/form-data")
+    public JsonNode replaceStream(
+            @PathVariable String id,
+            @RequestParam String requestId,
+            @RequestParam MultipartFile file,
+            HttpServletRequest r) {
+        var auth = requests.auth(r);
+        return attachments.replaceStream(attachments.find(id, auth), requestId, file, auth);
     }
 
     @DeleteMapping("/attachments/{id}")
