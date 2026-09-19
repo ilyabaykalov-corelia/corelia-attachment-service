@@ -29,6 +29,12 @@ public class AttachmentController {
         return attachments.stageInitial(id, requests.body(r), requests.auth(r));
     }
 
+    @PostMapping(value = "/staged-attachments/{id}", consumes = "multipart/form-data")
+    public JsonNode stageStream(
+            @PathVariable String id, @RequestParam MultipartFile file, HttpServletRequest r) {
+        return attachments.stageStream(id, file, requests.auth(r));
+    }
+
     @GetMapping("/documents/{type}/{id}/attachments")
     public JsonNode list(
             @PathVariable String type,

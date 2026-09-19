@@ -200,6 +200,14 @@ public class AttachmentService {
         return uploadVersion(documentId, id, id, 1, item, auth);
     }
 
+    /** Подготавливает первый файл создаваемого документа до запуска процесса. */
+    public JsonNode stageStream(String documentId, MultipartFile file, AuthContext auth) {
+        try { UUID.fromString(documentId); } catch (IllegalArgumentException e) { throw new ApiException(400, "Некорректный ID документа"); }
+        if (file.isEmpty()) throw new ApiException(400, "Для создания документа требуется непустое вложение");
+        String id = UUID.nameUUIDFromBytes((documentId + ":initial").getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+        return uploadStreamVersion(documentId, id, id, 1, file, auth);
+    }
+
     private ObjectNode uploadVersion(
             String documentId,
             String id,
