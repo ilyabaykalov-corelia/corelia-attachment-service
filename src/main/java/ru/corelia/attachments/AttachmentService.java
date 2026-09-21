@@ -8,7 +8,10 @@ import org.springframework.web.multipart.MultipartFile;
 import ru.corelia.auth.AuthContext;
 import ru.corelia.config.CoreliaConfig;
 import ru.corelia.http.ApiException;
-import ru.corelia.integration.*;
+import ru.corelia.provider.AttachmentCatalog;
+import ru.corelia.provider.BinaryStorage;
+import ru.corelia.provider.model.AttachmentMetadata;
+import ru.corelia.provider.model.BinaryStoreRequest;
 
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ObjectNode;
@@ -22,17 +25,17 @@ import java.util.*;
 public class AttachmentService {
     public record Download(InputStream body, String contentType, String fileName) {}
 
-    private final DataSpaceClient data;
-    private final FileStorageClient files;
+    private final AttachmentCatalog catalog;
+    private final BinaryStorage files;
     private final ru.corelia.transport.ServiceClient services;
     private final long maxAttachmentBytes;
 
     public AttachmentService(
-            DataSpaceClient data,
-            FileStorageClient files,
+            AttachmentCatalog catalog,
+            BinaryStorage files,
             ru.corelia.transport.ServiceClient services,
             CoreliaConfig config) {
-        this.data = data;
+        this.catalog = catalog;
         this.files = files;
         this.services = services;
         long megabytes = config.number("MAX_ATTACHMENT_SIZE_MB", 10);
@@ -41,41 +44,20 @@ public class AttachmentService {
         this.maxAttachmentBytes = megabytes * 1024 * 1024;
     }
 
-    private List<JsonNode> all(AuthContext auth) {
-        List<JsonNode> result = new ArrayList<>();
-        for (int offset = 0; ; ) {
-            JsonNode page = query("searchAttachment", object("offset", offset, "limit", 500), auth).path("searchAttachment");
-            List<JsonNode> batch = list(page.path("elems")); result.addAll(batch); offset += batch.size();
-            if (offset >= number(page, "count", offset)) return result;
-            if (batch.isEmpty()) throw new ApiException(502, "Неполная выборка вложений");
-        }
-    }
 
     public List<JsonNode> current(String documentType, String documentId, AuthContext auth) {
         return list(services.call("document", "/internal/v1/documents/" + encode(documentType) + "/" + encode(documentId), "GET", null, auth).path("attachments"));
     }
 
     public JsonNode find(String id, AuthContext auth) {
-        JsonNode found =
-                all(auth).stream()
-                        .filter(
-                                item ->
-                                        id.equals(text(item, "attachmentId"))
-                                                || id.equals(text(item, "id")))
-                        .findFirst()
-                        .orElseThrow(() -> new ApiException(404, "Вложение не найдено"));
+        JsonNode found = metadata(catalog.find(id, auth));
         requireDocument(text(found, "documentId"), auth);
         return found;
     }
 
     private List<JsonNode> versions(JsonNode current, AuthContext auth) {
         String logical = logicalId(current), document = text(current, "documentId");
-        return all(auth).stream()
-                .filter(
-                        item ->
-                                document.equals(text(item, "documentId"))
-                                        && logical.equals(logicalId(item)))
-                .toList();
+        return catalog.versions(first(current, "attachmentId", "id"), auth).stream().map(AttachmentService::metadata).toList();
     }
 
     public List<JsonNode> previous(String id, AuthContext auth) {
@@ -168,22 +150,10 @@ public class AttachmentService {
 
     public Download download(String id, AuthContext auth) {
         JsonNode attachment = find(id, auth);
-        String reference = text(attachment, "storageReference");
-        String prefix = "platform-v-dam:";
-        if (!reference.startsWith(prefix)
-                || reference.substring(prefix.length()).replaceAll("^/+", "").isEmpty()) {
-            throw new ApiException(404, "Вложение не связано с файловым хранилищем Platform V");
-        }
-        var response =
-                files.download(reference.substring(prefix.length()).replaceAll("^/+", ""), auth);
+        var response = files.read(new ru.corelia.provider.model.StorageReference(text(attachment, "storageReference")), auth);
         return new Download(
-                response.body(),
-                response.headers()
-                        .firstValue("content-type")
-                        .orElse(
-                                fallback(
-                                        text(attachment, "contentType"),
-                                        "application/octet-stream")),
+                response,
+                fallback(text(attachment, "contentType"), "application/octet-stream"),
                 fallback(text(attachment, "fileName"), id));
     }
 
@@ -215,7 +185,7 @@ public class AttachmentService {
             long version,
             JsonNode item,
             AuthContext auth) {
-        String name = FileStorageClient.safeFileName(text(item, "fileName")),
+        String name = ru.corelia.support.FileNames.safe(text(item, "fileName")),
                 base64 = text(item, "contentBase64");
         if (base64.isEmpty()) throw new ApiException(400, "Файл должен содержать имя и содержимое");
         if ((long) base64.length() * 3 / 4 > maxAttachmentBytes)
@@ -227,8 +197,10 @@ public class AttachmentService {
         String checksum;
         try { checksum = HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes)); }
         catch (java.security.NoSuchAlgorithmException e) { throw new IllegalStateException(e); }
-        String path = "documents/" + documentId + "/uploads/" + id + "/" + checksum + "/" + name;
-        files.upload(path, name, contentType, bytes, auth);
+        var stored = files.store(
+                new BinaryStoreRequest(documentId, id, name, contentType, bytes.length, checksum),
+                new ByteArrayInputStream(bytes),
+                auth);
         return object(
                 "attachmentId",
                 id,
@@ -242,8 +214,7 @@ public class AttachmentService {
                 contentType,
                 "size",
                 bytes.length,
-                "storageReference",
-                "platform-v-dam:" + path,
+                "storageReference", stored.reference().value(),
                 "version",
                 version,
                 "current",
@@ -259,15 +230,16 @@ public class AttachmentService {
             long version,
             MultipartFile file,
             AuthContext auth) {
-        String name = FileStorageClient.safeFileName(fallback(file.getOriginalFilename(), "attachment.bin"));
+        String name = ru.corelia.support.FileNames.safe(fallback(file.getOriginalFilename(), "attachment.bin"));
         long size = file.getSize();
         if (size <= 0) throw new ApiException(400, "Файл не должен быть пустым");
         if (size > maxAttachmentBytes) throw new ApiException(413, "Превышен допустимый размер вложения");
         String checksum = checksum(file, size);
         String contentType = fallback(file.getContentType(), "application/octet-stream");
-        String path = "documents/" + documentId + "/uploads/" + id + "/" + checksum + "/" + name;
+        ru.corelia.provider.model.StoredFile stored;
         try (InputStream content = file.getInputStream()) {
-            files.upload(path, name, contentType, content, size, auth);
+            stored = files.store(
+                    new BinaryStoreRequest(documentId, id, name, contentType, size, checksum), content, auth);
         } catch (IOException error) {
             throw new ApiException(400, "Не удалось прочитать загружаемый файл");
         }
@@ -278,7 +250,7 @@ public class AttachmentService {
                 "fileName", name,
                 "contentType", contentType,
                 "size", size,
-                "storageReference", "platform-v-dam:" + path,
+                "storageReference", stored.reference().value(),
                 "version", version,
                 "current", true,
                 "uploadedAt", Instant.now().toString());
@@ -359,7 +331,5 @@ public class AttachmentService {
         }
     }
 
-    private JsonNode query(String name, JsonNode variables, AuthContext auth) {
-        return data.query(name, variables, auth);
-    }
+    private static JsonNode metadata(AttachmentMetadata value) { return object("attachmentId", value.id(), "logicalAttachmentId", value.logicalId(), "documentId", value.documentId(), "fileName", value.fileName(), "contentType", value.contentType(), "size", value.size(), "version", value.version(), "current", value.current(), "uploadedAt", value.uploadedAt() == null ? "" : value.uploadedAt().toString(), "storageReference", value.storageReference().value()); }
 }
