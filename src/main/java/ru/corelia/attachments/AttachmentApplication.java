@@ -15,6 +15,7 @@ import ru.corelia.config.LocalEnvironment;
             "ru.corelia.cache",
             "ru.corelia.integration",
             "ru.corelia.transport",
+            "ru.corelia.observability",
             "ru.corelia.attachments"
         })
 public class AttachmentApplication {

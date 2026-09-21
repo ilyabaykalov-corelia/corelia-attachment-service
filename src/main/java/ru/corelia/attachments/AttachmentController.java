@@ -5,9 +5,12 @@ import static ru.corelia.support.Json.*;
 import jakarta.servlet.http.HttpServletRequest;
 
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 import ru.corelia.http.ApiRequest;
+import ru.corelia.observability.CoreliaObservability;
 
 import tools.jackson.databind.JsonNode;
 
@@ -17,15 +20,24 @@ import tools.jackson.databind.JsonNode;
 public class AttachmentController {
     private final AttachmentService attachments;
     private final ApiRequest requests;
+    private final CoreliaObservability observability;
 
-    public AttachmentController(AttachmentService attachments, ApiRequest requests) {
+    public AttachmentController(
+            AttachmentService attachments, ApiRequest requests, CoreliaObservability observability) {
         this.attachments = attachments;
         this.requests = requests;
+        this.observability = observability;
     }
 
     @PostMapping("/initial-attachments/{id}")
     public JsonNode stage(@PathVariable String id, HttpServletRequest r) {
         return attachments.stageInitial(id, requests.body(r), requests.auth(r));
+    }
+
+    @PostMapping(value = "/staged-attachments/{id}", consumes = "multipart/form-data")
+    public JsonNode stageStream(
+            @PathVariable String id, @RequestParam MultipartFile file, HttpServletRequest r) {
+        return attachments.stageStream(id, file, requests.auth(r));
     }
 
     @GetMapping("/documents/{type}/{id}/attachments")
@@ -40,7 +52,18 @@ public class AttachmentController {
     public ResponseEntity<JsonNode> upload(
             @PathVariable String type, @PathVariable String id, HttpServletRequest r) {
         return ResponseEntity.status(201)
-                .body(array(attachments.upload(type, id, requests.body(r), requests.auth(r))));
+                .body(upload("upload", () -> array(attachments.upload(type, id, requests.body(r), requests.auth(r)))));
+    }
+
+    @PostMapping(value = "/documents/{type}/{id}/attachments/stream", consumes = "multipart/form-data")
+    public ResponseEntity<JsonNode> uploadStream(
+            @PathVariable String type,
+            @PathVariable String id,
+            @RequestParam String requestId,
+            @RequestParam MultipartFile file,
+            HttpServletRequest r) {
+        return ResponseEntity.status(201)
+                .body(upload("upload", () -> attachments.uploadStream(type, id, requestId, file, requests.auth(r))));
     }
 
     @GetMapping("/attachments/{id}/metadata")
@@ -51,7 +74,17 @@ public class AttachmentController {
     @PutMapping("/attachments/{id}")
     public JsonNode replace(@PathVariable String id, HttpServletRequest r) {
         var auth = requests.auth(r);
-        return attachments.replace(attachments.find(id, auth), requests.body(r), auth);
+        return upload("replace", () -> attachments.replace(attachments.find(id, auth), requests.body(r), auth));
+    }
+
+    @PutMapping(value = "/attachments/{id}/stream", consumes = "multipart/form-data")
+    public JsonNode replaceStream(
+            @PathVariable String id,
+            @RequestParam String requestId,
+            @RequestParam MultipartFile file,
+            HttpServletRequest r) {
+        var auth = requests.auth(r);
+        return upload("replace", () -> attachments.replaceStream(attachments.find(id, auth), requestId, file, auth));
     }
 
     @DeleteMapping("/attachments/{id}")
@@ -65,13 +98,26 @@ public class AttachmentController {
     }
 
     @GetMapping("/attachments/{id}")
-    public ResponseEntity<byte[]> download(@PathVariable String id, HttpServletRequest r) {
-        var file = attachments.download(id, requests.auth(r));
+    public ResponseEntity<StreamingResponseBody> download(@PathVariable String id, HttpServletRequest r) {
+        var file = observability.observe("attachment.download", () -> attachments.download(id, requests.auth(r)));
         return ResponseEntity.ok()
                 .header("Content-Type", file.contentType())
                 .header(
                         "Content-Disposition",
                         "attachment; filename*=UTF-8''" + encode(file.fileName()))
-                .body(file.body());
+                .body(output -> {
+                    try (var input = file.body()) { input.transferTo(output); }
+                });
+    }
+
+    private <T> T upload(String operation, java.util.function.Supplier<T> action) {
+        try {
+            T result = observability.observe("attachment." + operation, action);
+            observability.attachmentUploaded(operation);
+            return result;
+        } catch (RuntimeException error) {
+            observability.attachmentUploadFailed(operation);
+            throw error;
+        }
     }
 }
