@@ -57,7 +57,7 @@ public class AttachmentService {
 
     private List<JsonNode> versions(JsonNode current, AuthContext auth) {
         String logical = logicalId(current), document = text(current, "documentId");
-        return catalog.versions(first(current, "attachmentId", "id"), auth).stream().map(AttachmentService::metadata).toList();
+        return catalog.attachmentVersions(first(current, "attachmentId", "id"), auth).stream().map(AttachmentService::metadata).toList();
     }
 
     public List<JsonNode> previous(String id, AuthContext auth) {
