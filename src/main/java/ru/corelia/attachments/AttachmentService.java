@@ -20,7 +20,7 @@ import java.time.Instant;
 import java.io.*;
 import java.util.*;
 
-/** Адаптирует команды вложений к DAM и существующим GraphQL-операциям метаданных. */
+/** Обрабатывает команды вложений через нейтральные возможности выбранного provider. */
 @Service
 public class AttachmentService {
     public record Download(InputStream body, String contentType, String fileName) {}
