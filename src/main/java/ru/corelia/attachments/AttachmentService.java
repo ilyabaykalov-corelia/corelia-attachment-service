@@ -87,7 +87,7 @@ public class AttachmentService {
             String childRequest = UUID.nameUUIDFromBytes((requestId + ":" + index).getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
             String id = UUID.nameUUIDFromBytes((documentId + ":" + childRequest).getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
             ObjectNode input = uploadVersion(documentId, id, id, 1, items.get(index), policy(documentType), auth);
-            uploaded.add(command(documentId, object("action", "upload", "requestId", childRequest, "file", input), auth));
+            uploaded.add(commitUploadAndStartIfReady(documentType, documentId, childRequest, input, auth));
         }
         return uploaded;
     }
@@ -105,7 +105,7 @@ public class AttachmentService {
         if (file.isEmpty()) throw new ApiException(400, "Не передан файл для загрузки");
         String id = UUID.nameUUIDFromBytes((documentId + ":" + requestId).getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
         ObjectNode input = uploadStreamVersion(documentId, id, id, 1, file, policy(documentType), auth);
-        return command(documentId, object("action", "upload", "requestId", requestId, "file", input), auth);
+        return commitUploadAndStartIfReady(documentType, documentId, requestId, input, auth);
     }
 
     public JsonNode replace(JsonNode current, JsonNode payload, AuthContext auth) {
@@ -148,6 +148,12 @@ public class AttachmentService {
         String type = text(requireDocument(document, auth), "typeCode");
         return services.call("document", "/internal/v1/documents/" + encode(type) + "/" + encode(document) + "/attachment-commands", "POST", body, auth);
     }
+    private JsonNode commitUploadAndStartIfReady(
+            String type, String document, String requestId, ObjectNode input, AuthContext auth) {
+        JsonNode committed = command(document, object("action", "upload", "requestId", requestId, "file", input), auth);
+        services.call("document", "/internal/v1/documents/" + encode(type) + "/" + encode(document) + "/workflow-readiness", "POST", object(), auth);
+        return committed;
+    }
     private static String requireRequestId(JsonNode payload) {
         String value = text(payload, "requestId");
         try { UUID.fromString(value); } catch (IllegalArgumentException e) { throw new ApiException(400, "Требуется requestId в формате UUID"); }
@@ -166,7 +172,7 @@ public class AttachmentService {
     /** Подготовка обязательного первого файла до появления документа; только для document-service. */
     public JsonNode stageInitial(String documentId, JsonNode body, AuthContext auth) {
         try { UUID.fromString(documentId); } catch (IllegalArgumentException e) { throw new ApiException(400, "Некорректный ID документа"); }
-        // mTLS restricts this route to document-service, which owns creation authorization.
+        // mTLS ограничивает этот маршрут document-service, который владеет авторизацией создания.
         JsonNode item = body.path("attachment");
         String content = text(item, "contentBase64");
         byte[] bytes;
