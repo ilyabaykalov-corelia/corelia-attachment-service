@@ -7,6 +7,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import ru.corelia.auth.AuthContext;
 import ru.corelia.config.CoreliaConfig;
+import ru.corelia.configuration.DocumentTypeCatalog;
 import ru.corelia.http.ApiException;
 import ru.corelia.provider.AttachmentCatalog;
 import ru.corelia.provider.BinaryStorage;
@@ -28,16 +29,19 @@ public class AttachmentService {
     private final AttachmentCatalog catalog;
     private final BinaryStorage files;
     private final ru.corelia.transport.ServiceClient services;
+    private final DocumentTypeCatalog documentTypes;
     private final long maxAttachmentBytes;
 
     public AttachmentService(
             AttachmentCatalog catalog,
             BinaryStorage files,
             ru.corelia.transport.ServiceClient services,
-            CoreliaConfig config) {
+            CoreliaConfig config,
+            DocumentTypeCatalog documentTypes) {
         this.catalog = catalog;
         this.files = files;
         this.services = services;
+        this.documentTypes = documentTypes;
         long megabytes = config.number("MAX_ATTACHMENT_SIZE_MB", 10);
         if (megabytes < 1 || megabytes > 1024)
             throw new IllegalArgumentException("MAX_ATTACHMENT_SIZE_MB должен быть от 1 до 1024");
@@ -82,7 +86,7 @@ public class AttachmentService {
         for (int index = 0; index < items.size(); index++) {
             String childRequest = UUID.nameUUIDFromBytes((requestId + ":" + index).getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
             String id = UUID.nameUUIDFromBytes((documentId + ":" + childRequest).getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
-            ObjectNode input = uploadVersion(documentId, id, id, 1, items.get(index), auth);
+            ObjectNode input = uploadVersion(documentId, id, id, 1, items.get(index), policy(documentType), auth);
             uploaded.add(command(documentId, object("action", "upload", "requestId", childRequest, "file", input), auth));
         }
         return uploaded;
@@ -100,7 +104,7 @@ public class AttachmentService {
         requireRequestId(object("requestId", requestId));
         if (file.isEmpty()) throw new ApiException(400, "Не передан файл для загрузки");
         String id = UUID.nameUUIDFromBytes((documentId + ":" + requestId).getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
-        ObjectNode input = uploadStreamVersion(documentId, id, id, 1, file, auth);
+        ObjectNode input = uploadStreamVersion(documentId, id, id, 1, file, policy(documentType), auth);
         return command(documentId, object("action", "upload", "requestId", requestId, "file", input), auth);
     }
 
@@ -110,7 +114,8 @@ public class AttachmentService {
         List<JsonNode> items = list(payload.path("attachments"));
         if (items.size() != 1) throw new ApiException(400, "Для замены требуется один файл");
         String id = UUID.nameUUIDFromBytes((document + ":" + requestId).getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
-        ObjectNode input = uploadVersion(document, id, logicalId(current), number(current, "version", 1) + 1, items.getFirst(), auth);
+        String documentType = text(requireDocument(document, auth), "typeCode");
+        ObjectNode input = uploadVersion(document, id, logicalId(current), number(current, "version", 1) + 1, items.getFirst(), policy(documentType), auth);
         return command(document, object("action", "replace", "requestId", requestId,
                 "attachmentId", first(current, "attachmentId", "id"), "file", input), auth);
     }
@@ -121,13 +126,14 @@ public class AttachmentService {
         requireRequestId(object("requestId", requestId));
         if (file.isEmpty()) throw new ApiException(400, "Не передан файл для замены");
         String id = UUID.nameUUIDFromBytes((document + ":" + requestId).getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+        String documentType = text(requireDocument(document, auth), "typeCode");
         ObjectNode input =
                 uploadStreamVersion(
                         document,
                         id,
                         logicalId(current),
                         number(current, "version", 1) + 1,
-                        file,
+                        file, policy(documentType),
                         auth);
         return command(document, object("action", "replace", "requestId", requestId,
                 "attachmentId", first(current, "attachmentId", "id"), "file", input), auth);
@@ -167,7 +173,7 @@ public class AttachmentService {
         try { bytes = Base64.getDecoder().decode(content); } catch (IllegalArgumentException e) { throw new ApiException(400, "Некорректное содержимое файла"); }
         if (bytes.length == 0) throw new ApiException(400, "Для создания документа требуется непустое вложение");
         String id = UUID.nameUUIDFromBytes((documentId + ":initial").getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
-        return uploadVersion(documentId, id, id, 1, item, auth);
+        return uploadVersion(documentId, id, id, 1, item, defaultPolicy(), auth);
     }
 
     /** Подготавливает первый файл создаваемого документа до запуска процесса. */
@@ -175,7 +181,7 @@ public class AttachmentService {
         try { UUID.fromString(documentId); } catch (IllegalArgumentException e) { throw new ApiException(400, "Некорректный ID документа"); }
         if (file.isEmpty()) throw new ApiException(400, "Для создания документа требуется непустое вложение");
         String id = UUID.nameUUIDFromBytes((documentId + ":initial").getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
-        return uploadStreamVersion(documentId, id, id, 1, file, auth);
+        return uploadStreamVersion(documentId, id, id, 1, file, defaultPolicy(), auth);
     }
 
     private ObjectNode uploadVersion(
@@ -184,14 +190,16 @@ public class AttachmentService {
             String logicalId,
             long version,
             JsonNode item,
+            AttachmentPolicy policy,
             AuthContext auth) {
         String name = ru.corelia.support.FileNames.safe(text(item, "fileName")),
                 base64 = text(item, "contentBase64");
         if (base64.isEmpty()) throw new ApiException(400, "Файл должен содержать имя и содержимое");
-        if ((long) base64.length() * 3 / 4 > maxAttachmentBytes)
+        validateExtension(name, policy);
+        if ((long) base64.length() * 3 / 4 > policy.maxBytes())
             throw new ApiException(413, "Превышен допустимый размер вложения");
         byte[] bytes = decodeBase64(base64);
-        if (bytes.length > maxAttachmentBytes)
+        if (bytes.length > policy.maxBytes())
             throw new ApiException(413, "Превышен допустимый размер вложения");
         String contentType = fallback(text(item, "contentType"), "application/octet-stream");
         String checksum;
@@ -229,11 +237,13 @@ public class AttachmentService {
             String logicalId,
             long version,
             MultipartFile file,
+            AttachmentPolicy policy,
             AuthContext auth) {
         String name = ru.corelia.support.FileNames.safe(fallback(file.getOriginalFilename(), "attachment.bin"));
         long size = file.getSize();
         if (size <= 0) throw new ApiException(400, "Файл не должен быть пустым");
-        if (size > maxAttachmentBytes) throw new ApiException(413, "Превышен допустимый размер вложения");
+        validateExtension(name, policy);
+        if (size > policy.maxBytes()) throw new ApiException(413, "Превышен допустимый размер вложения");
         String checksum = checksum(file, size);
         String contentType = fallback(file.getContentType(), "application/octet-stream");
         ru.corelia.provider.model.StoredFile stored;
@@ -255,6 +265,23 @@ public class AttachmentService {
                 "current", true,
                 "uploadedAt", Instant.now().toString());
     }
+
+    private AttachmentPolicy policy(String documentType) {
+        JsonNode attachment = documentTypes.definition(documentType).attachments();
+        var extensions = new HashSet<String>();
+        for (JsonNode extension : attachment.path("allowedExtensions")) extensions.add(extension.asString());
+        return new AttachmentPolicy(attachment.path("maxSizeBytes").asLong(maxAttachmentBytes), extensions);
+    }
+
+    private AttachmentPolicy defaultPolicy() { return new AttachmentPolicy(maxAttachmentBytes, Set.of()); }
+
+    private static void validateExtension(String name, AttachmentPolicy policy) {
+        int dot = name.lastIndexOf('.');
+        String extension = dot < 0 ? "" : name.substring(dot + 1).toLowerCase(Locale.ROOT);
+        if (!policy.allowedExtensions().isEmpty() && !policy.allowedExtensions().contains(extension)) throw new ApiException(400, "Недопустимый формат вложения");
+    }
+
+    private record AttachmentPolicy(long maxBytes, Set<String> allowedExtensions) {}
 
     private String checksum(MultipartFile file, long expectedSize) {
         try (InputStream content = file.getInputStream()) {
