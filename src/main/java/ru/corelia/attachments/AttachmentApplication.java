@@ -13,7 +13,6 @@ import ru.corelia.config.LocalEnvironment;
             "ru.corelia.auth",
             "ru.corelia.http",
             "ru.corelia.cache",
-            "ru.corelia.integration",
             "ru.corelia.transport",
             "ru.corelia.observability",
             "ru.corelia.attachments"

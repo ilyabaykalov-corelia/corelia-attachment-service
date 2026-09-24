@@ -8,11 +8,7 @@
     </parent>
     <artifactId>corelia-attachment-service</artifactId>
     <dependencies>
-        <dependency>
-            <groupId>ru.corelia</groupId>
-            <artifactId>corelia-platform-v</artifactId>
-            <version>${project.version}</version>
-        </dependency>
+        <dependency><groupId>ru.corelia</groupId><artifactId>corelia-provider-spi</artifactId><version>${project.version}</version></dependency>
     </dependencies>
     <build>
         <plugins>
