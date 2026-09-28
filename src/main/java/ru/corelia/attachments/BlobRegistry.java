@@ -2,6 +2,7 @@ package ru.corelia.attachments;
 
 import java.time.Instant;
 import java.util.Optional;
+import java.util.List;
 import java.util.UUID;
 
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -77,6 +78,14 @@ public class BlobRegistry {
 
     public void markDeleted(UUID id) {
         transition(id, BlobState.DELETING, BlobState.DELETED, "deleted_at");
+    }
+
+    public List<Blob> stale(BlobState state, Instant cutoff) {
+        return jdbc.sql("select * from blob where state = :state and created_at < :cutoff order by created_at")
+                .param("state", state.name())
+                .param("cutoff", cutoff)
+                .query(Blob.class)
+                .list();
     }
 
     private void transition(UUID id, BlobState from, BlobState to, String timestampColumn) {
