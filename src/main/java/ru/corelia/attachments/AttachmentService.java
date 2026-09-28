@@ -3,6 +3,7 @@ package ru.corelia.attachments;
 import static ru.corelia.support.Json.*;
 
 import org.springframework.stereotype.Service;
+import org.springframework.http.MediaType;
 import org.springframework.web.multipart.MultipartFile;
 
 import ru.corelia.auth.AuthContext;
@@ -187,8 +188,8 @@ public class AttachmentService {
         var response = files.read(new ru.corelia.provider.model.StorageReference(text(attachment, "storageReference")), auth);
         return new Download(
                 response,
-                fallback(text(attachment, "contentType"), "application/octet-stream"),
-                fallback(text(attachment, "fileName"), id));
+                contentType(fallback(text(attachment, "contentType"), "application/octet-stream")),
+                ru.corelia.support.FileNames.safe(fallback(text(attachment, "fileName"), id)));
     }
 
     /** Подготовка обязательного первого файла до появления документа; только для document-service. */
@@ -229,7 +230,7 @@ public class AttachmentService {
         byte[] bytes = decodeBase64(base64);
         if (bytes.length > policy.maxBytes())
             throw new ApiException(413, "Превышен допустимый размер вложения");
-        String contentType = fallback(text(item, "contentType"), "application/octet-stream");
+        String contentType = contentType(fallback(text(item, "contentType"), "application/octet-stream"));
         String checksum;
         try { checksum = HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes)); }
         catch (java.security.NoSuchAlgorithmException e) { throw new IllegalStateException(e); }
@@ -272,7 +273,7 @@ public class AttachmentService {
         validateExtension(name, policy);
         if (size > policy.maxBytes()) throw new ApiException(413, "Превышен допустимый размер вложения");
         String checksum = checksum(file, size);
-        String contentType = fallback(file.getContentType(), "application/octet-stream");
+        String contentType = contentType(fallback(file.getContentType(), "application/octet-stream"));
         ru.corelia.provider.model.StoredFile stored;
         try (InputStream content = file.getInputStream()) {
             stored = storePending(
@@ -341,6 +342,17 @@ public class AttachmentService {
         int dot = name.lastIndexOf('.');
         String extension = dot < 0 ? "" : name.substring(dot + 1).toLowerCase(Locale.ROOT);
         if (!policy.allowedExtensions().isEmpty() && !policy.allowedExtensions().contains(extension)) throw new ApiException(400, "Недопустимый формат вложения");
+    }
+
+    private static String contentType(String value) {
+        try {
+            MediaType parsed = MediaType.parseMediaType(value);
+            if (parsed.isWildcardType() || parsed.isWildcardSubtype())
+                throw new IllegalArgumentException("wildcard media type");
+            return parsed.toString();
+        } catch (IllegalArgumentException error) {
+            throw new ApiException(400, "Некорректный Content-Type вложения");
+        }
     }
 
     private record AttachmentPolicy(long maxBytes, Set<String> allowedExtensions) {}
