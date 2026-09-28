@@ -23,3 +23,6 @@ mvn -f ../pom.xml -pl corelia-attachment-service -am package -DskipTests
 - [Локальная эксплуатация](../docs/operations.md)
 
 Правила изменения документов принадлежат document-service; постоянное хранение находится в DataSpace/DAM, существующие процессы исполняются платформой. Системные тесты взаимодействия находятся в соседнем модуле `corelia-system-tests`.
+# Документация
+
+Подробности о внутреннем API, versioning и интеграции со storage: [docs/README.md](docs/README.md).
