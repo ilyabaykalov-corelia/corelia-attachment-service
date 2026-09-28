@@ -74,8 +74,40 @@ class LegacyBlobMigrationServiceTest {
         assertEquals("COMMITTED", jdbc.sql("select state from blob").query(String.class).single());
     }
 
+    @Test void retainsCommittedBlobWhenReferenceUpdateFailsAfterWrite() {
+        byte[] content = "historical".getBytes(StandardCharsets.UTF_8);
+        String checksum = "f5dbf9fe930c4f499bc6573d86f0156f86ed10363bfee0a71efb3eacce58410f";
+        AttachmentMetadata attachment = new AttachmentMetadata(
+                "attachment-1", "attachment-1", "document-1", "old.txt", "text/plain", content.length,
+                1, true, Instant.EPOCH, new StorageReference("platform-v-dam:old"));
+        JdbcClient jdbc = migrationDatabase("recovery");
+        CoreliaConfig config = mock(CoreliaConfig.class);
+        when(config.value("LEGACY_BLOB_MIGRATION_MODE")).thenReturn("true");
+        LegacyAttachmentReferenceUpdater updater = (value, expected, replacement, auth) -> {
+            throw new IllegalStateException("Ответ DataSpace потерян");
+        };
+        var service = new LegacyBlobMigrationService(
+                new Storage(content, checksum), new BlobRegistry(jdbc), List.of(auth -> List.of(attachment)), List.of(updater),
+                new LegacyBlobMigrationMode(config), (permission, auth) -> {});
+
+        assertThrows(IllegalStateException.class, () -> service.migrateAll(auth()));
+        assertEquals("COMMITTED", jdbc.sql("select state from blob").query(String.class).single());
+    }
+
     private static AuthContext auth() {
         return new AuthContext("Bearer test", "id", "operator", "Operator", "", List.of("app_owner"), "operator");
+    }
+
+    private static JdbcClient migrationDatabase(String name) {
+        var database = new DriverManagerDataSource("jdbc:h2:mem:migration-" + name + ";MODE=PostgreSQL;DB_CLOSE_DELAY=-1", "sa", "");
+        JdbcClient jdbc = JdbcClient.create(database);
+        jdbc.sql("""
+                create table blob (
+                    id uuid primary key, storage_provider varchar(50), bucket varchar(255), object_key varchar(255),
+                    sha256 varchar(64), size bigint, media_type varchar(255), state varchar(32), created_at timestamp,
+                    created_by varchar(255), committed_at timestamp, deleted_at timestamp)
+                """).update();
+        return jdbc;
     }
 
     private static final class ReferenceUpdater implements LegacyAttachmentReferenceUpdater {

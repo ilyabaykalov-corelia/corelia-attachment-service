@@ -90,9 +90,10 @@ public class LegacyBlobMigrationService {
                     || digest.size() != metadata.size()
                     || !digest.sha256().equals(metadata.checksum()))
                 throw new IllegalStateException("S3 не подтвердил перенесённое binary content");
+            // Сначала сохраняем blob: после успешного ответа DataSpace нельзя допустить его GC.
+            blobs.commit(pending.id());
             updater.replaceStorageReference(attachment, attachment.storageReference(), location.reference(), auth);
             referenceUpdated = true;
-            blobs.commit(pending.id());
         } catch (IOException error) {
             throw new IllegalStateException("Не удалось перенести historical binary", error);
         } finally {
@@ -122,7 +123,7 @@ public class LegacyBlobMigrationService {
 
     private void orphan(UUID id) {
         try { blobs.orphan(id); } catch (IllegalStateException ignored) {
-            // Ссылка уже могла быть обновлена перед обрывом ответа; blob сохраняется для recovery.
+            // Blob уже мог быть зафиксирован перед обрывом ответа DataSpace; сохраняем его для reconciliation.
         }
     }
 
