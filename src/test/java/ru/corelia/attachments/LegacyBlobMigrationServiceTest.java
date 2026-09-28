@@ -1,7 +1,10 @@
 package ru.corelia.attachments;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 import static ru.corelia.support.Json.object;
 
 import java.io.ByteArrayInputStream;
@@ -15,9 +18,12 @@ import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import ru.corelia.auth.AuthContext;
+import ru.corelia.config.CoreliaConfig;
+import ru.corelia.http.ApiException;
 import ru.corelia.provider.BinaryStorage;
 import ru.corelia.provider.LegacyAttachmentEnumerator;
 import ru.corelia.provider.LegacyAttachmentReferenceUpdater;
+import ru.corelia.provider.PermissionProvider;
 import ru.corelia.provider.model.AttachmentMetadata;
 import ru.corelia.provider.model.BinaryLocation;
 import ru.corelia.provider.model.BinaryMetadata;
@@ -26,6 +32,18 @@ import ru.corelia.provider.model.StorageReference;
 import ru.corelia.provider.model.StoredFile;
 
 class LegacyBlobMigrationServiceTest {
+    @Test void rejectsMigrationOutsideMaintenanceMode() {
+        CoreliaConfig config = mock(CoreliaConfig.class);
+        when(config.value("LEGACY_BLOB_MIGRATION_MODE")).thenReturn("false");
+        LegacyAttachmentEnumerator source = auth -> { throw new AssertionError("Источник не должен вызываться"); };
+        PermissionProvider permissions = (permission, auth) -> { throw new AssertionError("Права не должны проверяться"); };
+        var service = new LegacyBlobMigrationService(
+                mock(BinaryStorage.class), mock(BlobRegistry.class), List.of(source), List.of(),
+                new LegacyBlobMigrationMode(config), permissions);
+
+        assertEquals(409, assertThrows(ApiException.class, () -> service.migrateAll(auth())).status());
+    }
+
     @Test void copiesLegacyContentVerifiesChecksumAndReplacesReference() {
         byte[] content = "historical".getBytes(StandardCharsets.UTF_8);
         String checksum = "f5dbf9fe930c4f499bc6573d86f0156f86ed10363bfee0a71efb3eacce58410f";
@@ -43,7 +61,12 @@ class LegacyBlobMigrationServiceTest {
         Storage storage = new Storage(content, checksum);
         LegacyAttachmentEnumerator source = auth -> List.of(attachment);
         ReferenceUpdater updater = new ReferenceUpdater();
-        var service = new LegacyBlobMigrationService(storage, new BlobRegistry(jdbc), List.of(source), List.of(updater));
+        CoreliaConfig config = mock(CoreliaConfig.class);
+        when(config.value("LEGACY_BLOB_MIGRATION_MODE")).thenReturn("true");
+        PermissionProvider permissions = (permission, auth) -> assertEquals("Attachment:migrate", permission);
+        var service = new LegacyBlobMigrationService(
+                storage, new BlobRegistry(jdbc), List.of(source), List.of(updater),
+                new LegacyBlobMigrationMode(config), permissions);
 
         assertEquals(1, service.migrateAll(auth()).migrated());
         assertEquals("platform-v-dam:old", updater.expected.value());
@@ -52,7 +75,7 @@ class LegacyBlobMigrationServiceTest {
     }
 
     private static AuthContext auth() {
-        return new AuthContext("Bearer test", "id", "operator", "Operator", "", List.of(), "operator");
+        return new AuthContext("Bearer test", "id", "operator", "Operator", "", List.of("app_owner"), "operator");
     }
 
     private static final class ReferenceUpdater implements LegacyAttachmentReferenceUpdater {

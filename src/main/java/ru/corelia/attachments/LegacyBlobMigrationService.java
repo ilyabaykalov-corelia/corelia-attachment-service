@@ -16,6 +16,7 @@ import ru.corelia.auth.AuthContext;
 import ru.corelia.provider.BinaryStorage;
 import ru.corelia.provider.LegacyAttachmentEnumerator;
 import ru.corelia.provider.LegacyAttachmentReferenceUpdater;
+import ru.corelia.provider.PermissionProvider;
 import ru.corelia.provider.model.AttachmentMetadata;
 import ru.corelia.provider.model.BinaryLocation;
 import ru.corelia.provider.model.BinaryStoreRequest;
@@ -30,19 +31,27 @@ public class LegacyBlobMigrationService {
     private final BlobRegistry blobs;
     private final List<LegacyAttachmentEnumerator> sources;
     private final List<LegacyAttachmentReferenceUpdater> references;
+    private final LegacyBlobMigrationMode mode;
+    private final PermissionProvider permissions;
 
     public LegacyBlobMigrationService(
             BinaryStorage storage,
             BlobRegistry blobs,
             List<LegacyAttachmentEnumerator> sources,
-            List<LegacyAttachmentReferenceUpdater> references) {
+            List<LegacyAttachmentReferenceUpdater> references,
+            LegacyBlobMigrationMode mode,
+            PermissionProvider permissions) {
         this.storage = storage;
         this.blobs = blobs;
         this.sources = sources;
         this.references = references;
+        this.mode = mode;
+        this.permissions = permissions;
     }
 
     public Result migrateAll(AuthContext auth) {
+        mode.requireActive();
+        permissions.require("Attachment:migrate", auth);
         LegacyAttachmentEnumerator source = exactlyOne(sources, "источник historical вложений");
         LegacyAttachmentReferenceUpdater updater = exactlyOne(references, "обновитель historical ссылок");
         int migrated = 0;

@@ -19,12 +19,17 @@ import tools.jackson.databind.JsonNode;
 @RequestMapping("/internal/v1")
 public class AttachmentController {
     private final AttachmentService attachments;
+    private final LegacyBlobMigrationService migration;
     private final ApiRequest requests;
     private final CoreliaObservability observability;
 
     public AttachmentController(
-            AttachmentService attachments, ApiRequest requests, CoreliaObservability observability) {
+            AttachmentService attachments,
+            LegacyBlobMigrationService migration,
+            ApiRequest requests,
+            CoreliaObservability observability) {
         this.attachments = attachments;
+        this.migration = migration;
         this.requests = requests;
         this.observability = observability;
     }
@@ -32,6 +37,11 @@ public class AttachmentController {
     @PostMapping("/initial-attachments/{id}")
     public JsonNode stage(@PathVariable String id, HttpServletRequest r) {
         return attachments.stageInitial(id, requests.body(r), requests.auth(r));
+    }
+
+    @PostMapping("/migrations/legacy-blobs")
+    public JsonNode migrateLegacyBlobs(HttpServletRequest r) {
+        return object("migrated", migration.migrateAll(requests.auth(r)).migrated());
     }
 
     @PostMapping(value = "/staged-attachments/{id}", consumes = "multipart/form-data")
