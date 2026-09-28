@@ -13,6 +13,7 @@ import ru.corelia.provider.AttachmentCatalog;
 import ru.corelia.provider.BinaryStorage;
 import ru.corelia.provider.model.AttachmentMetadata;
 import ru.corelia.provider.model.BinaryStoreRequest;
+import ru.corelia.provider.model.StoredFile;
 
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ObjectNode;
@@ -30,6 +31,7 @@ public class AttachmentService {
     private final BinaryStorage files;
     private final ru.corelia.transport.ServiceClient services;
     private final DocumentTypeCatalog documentTypes;
+    private final BlobRegistry blobs;
     private final long maxAttachmentBytes;
 
     public AttachmentService(
@@ -37,11 +39,13 @@ public class AttachmentService {
             BinaryStorage files,
             ru.corelia.transport.ServiceClient services,
             CoreliaConfig config,
-            DocumentTypeCatalog documentTypes) {
+            DocumentTypeCatalog documentTypes,
+            BlobRegistry blobs) {
         this.catalog = catalog;
         this.files = files;
         this.services = services;
         this.documentTypes = documentTypes;
+        this.blobs = blobs;
         long megabytes = config.number("MAX_ATTACHMENT_SIZE_MB", 10);
         if (megabytes < 1 || megabytes > 1024)
             throw new IllegalArgumentException("MAX_ATTACHMENT_SIZE_MB должен быть от 1 до 1024");
@@ -116,8 +120,7 @@ public class AttachmentService {
         String id = UUID.nameUUIDFromBytes((document + ":" + requestId).getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
         String documentType = text(requireDocument(document, auth), "typeCode");
         ObjectNode input = uploadVersion(document, id, logicalId(current), number(current, "version", 1) + 1, items.getFirst(), policy(documentType), auth);
-        return command(document, object("action", "replace", "requestId", requestId,
-                "attachmentId", first(current, "attachmentId", "id"), "file", input), auth);
+        return commitReplacement(document, requestId, first(current, "attachmentId", "id"), input, auth);
     }
 
     public JsonNode replaceStream(
@@ -135,8 +138,7 @@ public class AttachmentService {
                         number(current, "version", 1) + 1,
                         file, policy(documentType),
                         auth);
-        return command(document, object("action", "replace", "requestId", requestId,
-                "attachmentId", first(current, "attachmentId", "id"), "file", input), auth);
+        return commitReplacement(document, requestId, first(current, "attachmentId", "id"), input, auth);
     }
 
     public JsonNode delete(String id, String requestId, AuthContext auth) {
@@ -150,9 +152,29 @@ public class AttachmentService {
     }
     private JsonNode commitUploadAndStartIfReady(
             String type, String document, String requestId, ObjectNode input, AuthContext auth) {
-        JsonNode committed = command(document, object("action", "upload", "requestId", requestId, "file", input), auth);
+        JsonNode committed;
+        try {
+            committed = command(document, object("action", "upload", "requestId", requestId, "file", input), auth);
+        } catch (RuntimeException error) {
+            orphan(input);
+            throw error;
+        }
+        commit(input);
         services.call("document", "/internal/v1/documents/" + encode(type) + "/" + encode(document) + "/workflow-readiness", "POST", object(), auth);
         return committed;
+    }
+
+    private JsonNode commitReplacement(
+            String document, String requestId, String attachmentId, ObjectNode input, AuthContext auth) {
+        try {
+            JsonNode committed = command(document, object("action", "replace", "requestId", requestId,
+                    "attachmentId", attachmentId, "file", input), auth);
+            commit(input);
+            return committed;
+        } catch (RuntimeException error) {
+            orphan(input);
+            throw error;
+        }
     }
     private static String requireRequestId(JsonNode payload) {
         String value = text(payload, "requestId");
@@ -211,10 +233,9 @@ public class AttachmentService {
         String checksum;
         try { checksum = HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes)); }
         catch (java.security.NoSuchAlgorithmException e) { throw new IllegalStateException(e); }
-        var stored = files.store(
+        var stored = storePending(
                 new BinaryStoreRequest(documentId, id, name, contentType, bytes.length, checksum),
-                new ByteArrayInputStream(bytes),
-                auth);
+                new ByteArrayInputStream(bytes), auth);
         return object(
                 "attachmentId",
                 id,
@@ -254,7 +275,7 @@ public class AttachmentService {
         String contentType = fallback(file.getContentType(), "application/octet-stream");
         ru.corelia.provider.model.StoredFile stored;
         try (InputStream content = file.getInputStream()) {
-            stored = files.store(
+            stored = storePending(
                     new BinaryStoreRequest(documentId, id, name, contentType, size, checksum), content, auth);
         } catch (IOException error) {
             throw new ApiException(400, "Не удалось прочитать загружаемый файл");
@@ -280,6 +301,41 @@ public class AttachmentService {
     }
 
     private AttachmentPolicy defaultPolicy() { return new AttachmentPolicy(maxAttachmentBytes, Set.of()); }
+
+    private StoredFile storePending(BinaryStoreRequest request, InputStream content, AuthContext auth) {
+        var location = files.reserve(request, auth);
+        Blob pending = blobs.createPending(location, request.checksum(), request.size(), request.contentType(), auth.id());
+        try {
+            StoredFile stored = files.store(request.withReference(location.reference()), content, auth);
+            var metadata = files.metadata(location.reference(), auth);
+            if (!location.reference().equals(stored.reference())
+                    || !request.checksum().equals(stored.checksum())
+                    || request.size() != stored.size()
+                    || request.size() != metadata.size()
+                    || !request.checksum().equals(metadata.checksum()))
+                throw new IllegalStateException("Provider вернул неподтверждённое binary content");
+            return stored;
+        } catch (RuntimeException error) {
+            blobs.orphan(pending.id());
+            throw error;
+        }
+    }
+
+    private void commit(JsonNode input) {
+        blobs.commit(blobId(input));
+    }
+
+    private void orphan(JsonNode input) {
+        try { blobs.orphan(blobId(input)); } catch (IllegalStateException ignored) {
+            // Команда документа могла завершиться после обрыва ответа; GC сверит состояние позже.
+        }
+    }
+
+    private static UUID blobId(JsonNode input) {
+        String reference = text(input, "storageReference"), prefix = "corelia-blob://";
+        if (!reference.startsWith(prefix)) throw new IllegalArgumentException("Ожидалась logical Corelia blob reference");
+        return UUID.fromString(reference.substring(prefix.length()));
+    }
 
     private static void validateExtension(String name, AttachmentPolicy policy) {
         int dot = name.lastIndexOf('.');

@@ -6,6 +6,9 @@ import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 
+import ru.corelia.provider.model.BinaryLocation;
+import ru.corelia.provider.model.StorageReference;
+
 class BlobRegistryTest {
     @Test
     void allowsOnlyDeclaredLifecycleTransitions() {
@@ -19,7 +22,7 @@ class BlobRegistryTest {
                 """).update();
         BlobRegistry registry = new BlobRegistry(jdbc);
 
-        Blob pending = registry.createPending("s3", "attachments", "blobs/object", "a".repeat(64), 12,
+        Blob pending = registry.createPending(location(), "a".repeat(64), 12,
                 "text/plain", "user-1");
         registry.commit(pending.id());
 
@@ -39,12 +42,17 @@ class BlobRegistryTest {
                 """).update();
         BlobRegistry registry = new BlobRegistry(jdbc);
 
-        Blob pending = registry.createPending("s3", "attachments", "blobs/object", "b".repeat(64), 12,
+        Blob pending = registry.createPending(location(), "b".repeat(64), 12,
                 "text/plain", "user-1");
         registry.orphan(pending.id());
         registry.beginDeleting(pending.id());
         registry.markDeleted(pending.id());
 
         assertEquals(BlobState.DELETED, registry.find(pending.id()).orElseThrow().state());
+    }
+
+    private static BinaryLocation location() {
+        java.util.UUID id = java.util.UUID.randomUUID();
+        return new BinaryLocation(new StorageReference("corelia-blob://" + id), "s3", "attachments", "blobs/" + id);
     }
 }

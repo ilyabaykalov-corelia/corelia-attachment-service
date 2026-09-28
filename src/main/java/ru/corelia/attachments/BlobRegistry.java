@@ -7,6 +7,8 @@ import java.util.UUID;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
+import ru.corelia.provider.model.BinaryLocation;
+
 /** Реестр blob-ов; attachment service является единственным владельцем его состояний. */
 @Repository
 public class BlobRegistry {
@@ -17,15 +19,13 @@ public class BlobRegistry {
     }
 
     public Blob createPending(
-            String storageProvider,
-            String bucket,
-            String objectKey,
+            BinaryLocation location,
             String sha256,
             long size,
             String mediaType,
             String createdBy) {
         Blob blob = new Blob(
-                UUID.randomUUID(), storageProvider, bucket, objectKey, sha256, size, mediaType,
+                blobId(location), location.storageProvider(), location.bucket(), location.objectKey(), sha256, size, mediaType,
                 BlobState.PENDING, Instant.now(), createdBy, null, null);
         jdbc.sql("""
                 insert into blob (id, storage_provider, bucket, object_key, sha256, size, media_type, state,
@@ -47,6 +47,13 @@ public class BlobRegistry {
                 .param("deletedAt", blob.deletedAt())
                 .update();
         return blob;
+    }
+
+    private static UUID blobId(BinaryLocation location) {
+        String value = location.reference().value();
+        String prefix = "corelia-blob://";
+        if (!value.startsWith(prefix)) throw new IllegalArgumentException("Blob registry принимает только logical Corelia reference");
+        return UUID.fromString(value.substring(prefix.length()));
     }
 
     public Optional<Blob> find(UUID id) {
