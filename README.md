@@ -1,6 +1,8 @@
 # corelia-attachment-service
 
-Файлы и версии в DAM с метаданными в DataSpace и проверкой доступа к документу.
+Сервис владеет реестром blob-ов и жизненным циклом содержимого вложений; правила
+состава версий документов остаются в document-service. Historical DAM остаётся
+временным compatibility source до завершения миграции.
 
 Java 25, Spring Boot 4.0.8, Maven. Комментарии и документация — на русском языке.
 
@@ -22,7 +24,10 @@ mvn -f ../pom.xml -pl corelia-attachment-service -am package -DskipTests
 - [API](../docs/api.md)
 - [Локальная эксплуатация](../docs/operations.md)
 
-Правила изменения документов принадлежат document-service; постоянное хранение находится в DataSpace/DAM, существующие процессы исполняются платформой. Системные тесты взаимодействия находятся в соседнем модуле `corelia-system-tests`.
+Правила изменения документов принадлежат document-service. Реестр blob-ов хранится
+в отдельной database `corelia_attachment`, которой владеет только этот сервис;
+физическое содержимое хранится через provider SPI. Системные тесты взаимодействия
+находятся в соседнем модуле `corelia-system-tests`.
 # Документация
 
 Подробности о внутреннем API, versioning и интеграции со storage: [docs/README.md](docs/README.md).
