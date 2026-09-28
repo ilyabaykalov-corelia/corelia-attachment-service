@@ -41,7 +41,8 @@ public class AttachmentController {
 
     @PostMapping("/migrations/legacy-blobs")
     public JsonNode migrateLegacyBlobs(HttpServletRequest r) {
-        return object("migrated", migration.migrateAll(requests.auth(r)).migrated());
+        var result = migration.migrateAll(requests.auth(r));
+        return object("migrated", result.migrated(), "remaining", result.remaining());
     }
 
     @PostMapping(value = "/staged-attachments/{id}", consumes = "multipart/form-data")

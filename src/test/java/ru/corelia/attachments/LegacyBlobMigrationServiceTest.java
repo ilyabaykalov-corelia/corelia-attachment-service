@@ -59,8 +59,8 @@ class LegacyBlobMigrationServiceTest {
                     created_by varchar(255), committed_at timestamp, deleted_at timestamp)
                 """).update();
         Storage storage = new Storage(content, checksum);
-        LegacyAttachmentEnumerator source = auth -> List.of(attachment);
         ReferenceUpdater updater = new ReferenceUpdater();
+        LegacyAttachmentEnumerator source = auth -> updater.replacement == null ? List.of(attachment) : List.of();
         CoreliaConfig config = mock(CoreliaConfig.class);
         when(config.value("LEGACY_BLOB_MIGRATION_MODE")).thenReturn("true");
         PermissionProvider permissions = (permission, auth) -> assertEquals("Attachment:migrate", permission);
@@ -68,7 +68,9 @@ class LegacyBlobMigrationServiceTest {
                 storage, new BlobRegistry(jdbc), List.of(source), List.of(updater),
                 new LegacyBlobMigrationMode(config), permissions);
 
-        assertEquals(1, service.migrateAll(auth()).migrated());
+        var result = service.migrateAll(auth());
+        assertEquals(1, result.migrated());
+        assertEquals(0, result.remaining());
         assertEquals("platform-v-dam:old", updater.expected.value());
         assertTrue(updater.replacement.value().startsWith("corelia-blob://"));
         assertEquals("COMMITTED", jdbc.sql("select state from blob").query(String.class).single());

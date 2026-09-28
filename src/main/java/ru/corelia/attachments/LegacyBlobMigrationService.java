@@ -25,7 +25,7 @@ import ru.corelia.provider.model.StoredFile;
 /** Явно запускаемый перенос historical DAM binary в выбранное S3-compatible хранилище. */
 @Service
 public class LegacyBlobMigrationService {
-    public record Result(int migrated) {}
+    public record Result(int migrated, int remaining) {}
 
     private final BinaryStorage storage;
     private final BlobRegistry blobs;
@@ -54,12 +54,16 @@ public class LegacyBlobMigrationService {
         permissions.require("Attachment:migrate", auth);
         LegacyAttachmentEnumerator source = exactlyOne(sources, "источник historical вложений");
         LegacyAttachmentReferenceUpdater updater = exactlyOne(references, "обновитель historical ссылок");
+        List<AttachmentMetadata> historical = source.historicalAttachments(auth);
         int migrated = 0;
-        for (AttachmentMetadata attachment : source.historicalAttachments(auth)) {
+        for (AttachmentMetadata attachment : historical) {
             migrate(attachment, updater, auth);
             migrated++;
         }
-        return new Result(migrated);
+        int remaining = source.historicalAttachments(auth).size();
+        if (remaining != 0)
+            throw new IllegalStateException("После migration остались historical DAM вложения: " + remaining);
+        return new Result(migrated, remaining);
     }
 
     private void migrate(
