@@ -1,6 +1,7 @@
 package ru.corelia.attachments;
 
 import java.time.Instant;
+import java.sql.Timestamp;
 import java.util.Optional;
 import java.util.List;
 import java.util.UUID;
@@ -42,10 +43,10 @@ public class BlobRegistry {
                 .param("size", blob.size())
                 .param("mediaType", blob.mediaType())
                 .param("state", blob.state().name())
-                .param("createdAt", blob.createdAt())
+                .param("createdAt", Timestamp.from(blob.createdAt()))
                 .param("createdBy", blob.createdBy())
-                .param("committedAt", blob.committedAt())
-                .param("deletedAt", blob.deletedAt())
+                .param("committedAt", timestamp(blob.committedAt()))
+                .param("deletedAt", timestamp(blob.deletedAt()))
                 .update();
         return blob;
     }
@@ -83,7 +84,7 @@ public class BlobRegistry {
     public List<Blob> stale(BlobState state, Instant cutoff) {
         return jdbc.sql("select * from blob where state = :state and created_at < :cutoff order by created_at")
                 .param("state", state.name())
-                .param("cutoff", cutoff)
+                .param("cutoff", Timestamp.from(cutoff))
                 .query(Blob.class)
                 .list();
     }
@@ -94,8 +95,12 @@ public class BlobRegistry {
                 .param("to", to.name())
                 .param("id", id)
                 .param("from", from.name())
-                .param("now", Instant.now())
+                .param("now", Timestamp.from(Instant.now()))
                 .update();
         if (updated != 1) throw new IllegalStateException("Недопустимый переход состояния blob " + id);
+    }
+
+    private static Timestamp timestamp(Instant value) {
+        return value == null ? null : Timestamp.from(value);
     }
 }
