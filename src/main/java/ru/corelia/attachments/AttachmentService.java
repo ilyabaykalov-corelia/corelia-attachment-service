@@ -241,6 +241,7 @@ public class AttachmentService {
         if (bytes.length > policy.maxBytes())
             throw new ApiException(413, "Превышен допустимый размер вложения");
         String contentType = contentType(fallback(text(item, "contentType"), "application/octet-stream"));
+        validateContentType(contentType, policy);
         String checksum;
         try { checksum = HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes)); }
         catch (java.security.NoSuchAlgorithmException e) { throw new IllegalStateException(e); }
@@ -284,6 +285,7 @@ public class AttachmentService {
         if (size > policy.maxBytes()) throw new ApiException(413, "Превышен допустимый размер вложения");
         String checksum = checksum(file, size);
         String contentType = contentType(fallback(file.getContentType(), "application/octet-stream"));
+        validateContentType(contentType, policy);
         ru.corelia.provider.model.StoredFile stored;
         try (InputStream content = file.getInputStream()) {
             stored = storePending(
@@ -308,10 +310,12 @@ public class AttachmentService {
         JsonNode attachment = documentTypes.definition(documentType).attachments();
         var extensions = new HashSet<String>();
         for (JsonNode extension : attachment.path("allowedExtensions")) extensions.add(extension.asString());
-        return new AttachmentPolicy(attachment.path("maxSizeBytes").asLong(maxAttachmentBytes), extensions);
+        var mimeTypes = new HashSet<String>();
+        for (JsonNode mimeType : attachment.path("allowedMimeTypes")) mimeTypes.add(mimeType.asString());
+        return new AttachmentPolicy(attachment.path("maxSizeBytes").asLong(maxAttachmentBytes), extensions, mimeTypes);
     }
 
-    private AttachmentPolicy defaultPolicy() { return new AttachmentPolicy(maxAttachmentBytes, Set.of()); }
+    private AttachmentPolicy defaultPolicy() { return new AttachmentPolicy(maxAttachmentBytes, Set.of(), Set.of()); }
 
     private StoredFile storePending(BinaryStoreRequest request, InputStream content, AuthContext auth) {
         var location = files.reserve(request, auth);
@@ -354,6 +358,13 @@ public class AttachmentService {
         if (!policy.allowedExtensions().isEmpty() && !policy.allowedExtensions().contains(extension)) throw new ApiException(400, "Недопустимый формат вложения");
     }
 
+    private static void validateContentType(String contentType, AttachmentPolicy policy) {
+        MediaType parsed = MediaType.parseMediaType(contentType);
+        String value = parsed.getType() + "/" + parsed.getSubtype();
+        if (!policy.allowedMimeTypes().isEmpty() && !policy.allowedMimeTypes().contains(value))
+            throw new ApiException(400, "Недопустимый Content-Type вложения");
+    }
+
     private static String contentType(String value) {
         try {
             MediaType parsed = MediaType.parseMediaType(value);
@@ -365,7 +376,7 @@ public class AttachmentService {
         }
     }
 
-    private record AttachmentPolicy(long maxBytes, Set<String> allowedExtensions) {}
+    private record AttachmentPolicy(long maxBytes, Set<String> allowedExtensions, Set<String> allowedMimeTypes) {}
 
     private String checksum(MultipartFile file, long expectedSize) {
         try (InputStream content = file.getInputStream()) {
