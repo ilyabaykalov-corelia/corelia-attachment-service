@@ -1,33 +1,20 @@
 # corelia-attachment-service
 
-Сервис владеет реестром blob-ов и жизненным циклом содержимого вложений; правила
-состава версий документов остаются в document-service. Historical DAM остаётся
-временным compatibility source до завершения миграции.
+Владелец физического lifecycle blob: потоковая загрузка/чтение, replacement,
+metadata, checksum и очистка orphaned content. Метаданные registry находятся
+в `corelia_attachment`; связь вложения с document version остаётся у data
+owner и изменяется через document-service.
 
-Java 25, Spring Boot 4.0.8, Maven. Комментарии и документация — на русском языке.
-
-## Сборка и запуск
-
-Это отдельный Git-репозиторий сервиса внутри рабочего каталога Corelia. Для сборки требуются соседний родительский `corelia-parent` и общие библиотеки Corelia. Из каталога сервиса:
+Сервис публикует внутренние `/internal/v1` endpoint по mTLS. В Compose выбран
+S3 provider (SeaweedFS локально), native-data и native-permissions. Ограничение
+multipart задаёт `MAX_ATTACHMENT_SIZE_MB`; blob recovery horizon —
+`BLOB_GC_RECOVERY_HOURS`.
 
 ```bash
-mvn -f ../pom.xml -pl corelia-attachment-service -am package -DskipTests
+mvn -pl corelia-attachment-service -am test
+./scripts/up.sh
 ```
 
-Локальное окружение запускается из общей папки Corelia командой `./scripts/up.sh`. Сертификаты и адреса сервисов настраиваются через Compose и переменные окружения. Секреты и результаты сборки в репозиторий не включаются.
-
-Для сборки отдельно от общей папки потребуется публикация родительского POM и библиотек в Maven-репозиторий. Общая Docker-конфигурация находится в родительском репозитории Corelia.
-
-## Документация рабочего окружения
-
-- [Архитектура](../docs/architecture.md)
-- [API](../docs/api.md)
-- [Локальная эксплуатация](../docs/operations.md)
-
-Правила изменения документов принадлежат document-service. Реестр blob-ов хранится
-в отдельной database `corelia_attachment`, которой владеет только этот сервис;
-физическое содержимое хранится через provider SPI. Системные тесты взаимодействия
-находятся в соседнем модуле `corelia-system-tests`.
-# Документация
-
-Подробности о внутреннем API, versioning и интеграции со storage: [docs/README.md](docs/README.md).
+Для S3 provider обязательны endpoint, bucket и credentials. См.
+[provider S3](../corelia-provider-s3/README.md) и
+[versioning](../docs/document-versioning.md).
