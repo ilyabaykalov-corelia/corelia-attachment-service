@@ -33,7 +33,6 @@ public class AttachmentService {
     private final ru.corelia.transport.ServiceClient services;
     private final DocumentTypeCatalog documentTypes;
     private final BlobRegistry blobs;
-    private final LegacyBlobMigrationMode migrationMode;
     private final long maxAttachmentBytes;
 
     public AttachmentService(
@@ -42,14 +41,12 @@ public class AttachmentService {
             ru.corelia.transport.ServiceClient services,
             CoreliaConfig config,
             DocumentTypeCatalog documentTypes,
-            BlobRegistry blobs,
-            LegacyBlobMigrationMode migrationMode) {
+            BlobRegistry blobs) {
         this.catalog = catalog;
         this.files = files;
         this.services = services;
         this.documentTypes = documentTypes;
         this.blobs = blobs;
-        this.migrationMode = migrationMode;
         long megabytes = config.number("MAX_ATTACHMENT_SIZE_MB", 10);
         if (megabytes < 1 || megabytes > 1024)
             throw new IllegalArgumentException("MAX_ATTACHMENT_SIZE_MB должен быть от 1 до 1024");
@@ -84,7 +81,6 @@ public class AttachmentService {
     }
 
     public List<JsonNode> upload(String documentType, String documentId, JsonNode payload, AuthContext auth) {
-        migrationMode.rejectAttachmentMutation();
         JsonNode owner = requireDocument(documentId, auth);
         if (!documentType.equals(text(owner, "typeCode")))
             throw new ApiException(400, "Вид документа не соответствует вложению");
@@ -107,7 +103,6 @@ public class AttachmentService {
             String requestId,
             MultipartFile file,
             AuthContext auth) {
-        migrationMode.rejectAttachmentMutation();
         JsonNode owner = requireDocument(documentId, auth);
         if (!documentType.equals(text(owner, "typeCode")))
             throw new ApiException(400, "Вид документа не соответствует вложению");
@@ -119,7 +114,6 @@ public class AttachmentService {
     }
 
     public JsonNode replace(JsonNode current, JsonNode payload, AuthContext auth) {
-        migrationMode.rejectAttachmentMutation();
         String document = text(current, "documentId");
         String requestId = requireRequestId(payload);
         List<JsonNode> items = list(payload.path("attachments"));
@@ -132,7 +126,6 @@ public class AttachmentService {
 
     public JsonNode replaceStream(
             JsonNode current, String requestId, MultipartFile file, AuthContext auth) {
-        migrationMode.rejectAttachmentMutation();
         String document = text(current, "documentId");
         requireRequestId(object("requestId", requestId));
         if (file.isEmpty()) throw new ApiException(400, "Не передан файл для замены");
@@ -150,7 +143,6 @@ public class AttachmentService {
     }
 
     public JsonNode delete(String id, String requestId, AuthContext auth) {
-        migrationMode.rejectAttachmentMutation();
         JsonNode current = find(id, auth);
         return command(text(current, "documentId"), object("action", "delete", "attachmentId", first(current, "attachmentId", "id"),
                 "requestId", requireRequestId(object("requestId", requestId))), auth);
@@ -202,7 +194,6 @@ public class AttachmentService {
 
     /** Подготовка обязательного первого файла до появления документа; только для document-service. */
     public JsonNode stageInitial(String documentId, JsonNode body, AuthContext auth) {
-        migrationMode.rejectAttachmentMutation();
         try { UUID.fromString(documentId); } catch (IllegalArgumentException e) { throw new ApiException(400, "Некорректный ID документа"); }
         // mTLS ограничивает этот маршрут document-service, который владеет авторизацией создания.
         JsonNode item = body.path("attachment");
@@ -216,7 +207,6 @@ public class AttachmentService {
 
     /** Подготавливает первый файл создаваемого документа до запуска процесса. */
     public JsonNode stageStream(String documentId, MultipartFile file, AuthContext auth) {
-        migrationMode.rejectAttachmentMutation();
         try { UUID.fromString(documentId); } catch (IllegalArgumentException e) { throw new ApiException(400, "Некорректный ID документа"); }
         if (file.isEmpty()) throw new ApiException(400, "Для создания документа требуется непустое вложение");
         String id = UUID.nameUUIDFromBytes((documentId + ":initial").getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
