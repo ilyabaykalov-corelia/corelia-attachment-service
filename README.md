@@ -8,7 +8,7 @@ Java 25, Spring Boot 4.0.8, Maven. Комментарии и документа�
 
 ## Сборка и запуск
 
-Это отдельный Git-репозиторий сервиса внутри рабочего каталога Corelia. Для сборки пока требуются соседний родительский `corelia-parent` и библиотеки corelia-platform-v и corelia-common. Из каталога сервиса:
+Это отдельный Git-репозиторий сервиса внутри рабочего каталога Corelia. Для сборки требуются соседний родительский `corelia-parent` и общие библиотеки Corelia. Из каталога сервиса:
 
 ```bash
 mvn -f ../pom.xml -pl corelia-attachment-service -am package -DskipTests
