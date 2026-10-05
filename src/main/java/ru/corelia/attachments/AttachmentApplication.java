@@ -2,6 +2,7 @@ package ru.corelia.attachments;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 import ru.corelia.config.LocalEnvironment;
 
@@ -17,6 +18,7 @@ import ru.corelia.config.LocalEnvironment;
             "ru.corelia.observability",
             "ru.corelia.attachments"
         })
+@EnableScheduling
 public class AttachmentApplication {
     public static void main(String[] args) {
         var app = new SpringApplication(AttachmentApplication.class);

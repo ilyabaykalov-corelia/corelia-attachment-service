@@ -23,7 +23,9 @@ public class AttachmentController {
     private final CoreliaObservability observability;
 
     public AttachmentController(
-            AttachmentService attachments, ApiRequest requests, CoreliaObservability observability) {
+            AttachmentService attachments,
+            ApiRequest requests,
+            CoreliaObservability observability) {
         this.attachments = attachments;
         this.requests = requests;
         this.observability = observability;
